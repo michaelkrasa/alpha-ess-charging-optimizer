@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import json
 import logging
+import os
 import time
 
 import aiohttp
@@ -100,11 +101,14 @@ async def authenticate_and_send_to_ess(username: str, password: str, start_charg
 
 
 def main():
-    tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-    url_date = tomorrow.strftime('%Y-%m-%d')
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
     logging.basicConfig(level=logging.INFO, filename="ESS.log")
 
-    # Make a GET request to the website
+    # Request prices for the next day
+    tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+    url_date = tomorrow.strftime('%Y-%m-%d')
+
     for i in range(5):
         response = requests.get('https://www.ote-cr.cz/en/short-term-markets/electricity/day-ahead-market/@@chart-data?report_date=' + url_date)
         if response.status_code == 200:
