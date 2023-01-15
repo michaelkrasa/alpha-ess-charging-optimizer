@@ -1,5 +1,4 @@
-"username": "your_username",
-"password": "your_password",
+"username": "your_username"
+"password": "your_password"
 "serial_number": "your_serial_number" # optional if you only have one device
 "price_multiplier": 1.3 # charge price multiplier to justify wear and tear on the battery
-

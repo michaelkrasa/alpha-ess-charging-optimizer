@@ -14,6 +14,9 @@ Check the electricity prices for the next day (usually available after 3PM) on t
 to maximize utility. 
 """
 
+global config
+midnight = "00:00"
+
 
 def load_config():
     with open(os.path.join(os.path.dirname(__file__), "config.yaml")) as f:
@@ -51,9 +54,9 @@ def find_three_highest_consecutive(numbers: list):
     return max_index, max_mean
 
 
-async def set_charge_and_discharge_hours(config: dict, should_charge: bool, start_charging: str, stop_charging: str, start_discharging: str):
+async def set_charge_and_discharge_hours(should_charge: bool, start_charging: str, stop_charging: str, start_discharging: str):
     for i in range(5):
-        success = await authenticate_and_send_to_ess(config, should_charge, start_charging, stop_charging, start_discharging)
+        success = await authenticate_and_send_to_ess(should_charge, start_charging, stop_charging, start_discharging)
         if success:
             break
         logging.warning("Authentication and or sending to ESS failed, retrying in 30 seconds")
@@ -64,18 +67,16 @@ async def set_charge_and_discharge_hours(config: dict, should_charge: bool, star
         logging.error("Failed to authenticate or send request to ESS after 5 attempts... giving up\n\n")
 
 
-async def authenticate_and_send_to_ess(config: dict, should_charge: bool, start_charging: str, stop_charging: str, start_discharging: str) -> bool:
+async def authenticate_and_send_to_ess(should_charge: bool, start_charging: str, stop_charging: str, start_discharging: str) -> bool:
     username = config["username"]
     password = config["password"]
     serial_number = config["serial_number"]
 
     client: alphaess = alphaess()
     try:
-        if not await client.authenticate(username=username, password=password):
-            logging.error("Authentication with the provided details failed. Please check your username and password")
-            return False
+        await client.authenticate(username=username, password=password)
 
-        if serial_number == "your_serial_number":
+        if serial_number == "your_serial_number":  # unset in config
             data = await client.getdata()
             if not data or "sys_sn" not in data[0]:
                 logging.error("Could not get serial number from data")
@@ -84,13 +85,13 @@ async def authenticate_and_send_to_ess(config: dict, should_charge: bool, start_
             logging.info("Your serial number is %s, consider adding it to the config", serial_number, extra={"color": "yellow"})
 
         # Set the charge and discharge hours
-        await client.setbatterycharge(serial_number, should_charge, start_charging, stop_charging, "00:00", "00:00", 100)
-        await client.setbatterydischarge(serial_number, should_charge, start_discharging, "23:59", "00:00", "00:00", 10)
+        await client.setbatterycharge(serial_number, should_charge, start_charging, stop_charging, midnight, midnight, 100)
+        await client.setbatterydischarge(serial_number, should_charge, start_discharging, midnight, midnight, midnight, 10)
         return True
 
     except aiohttp.ClientResponseError as e:
         if e.status == 401:
-            logging.error("Authentication Error")
+            logging.error("Authentication with the provided details failed. Please check your username and password")
         else:
             logging.error(e)
         return False
@@ -101,22 +102,24 @@ async def authenticate_and_send_to_ess(config: dict, should_charge: bool, start_
 
 
 # Validate the config file for required fields
-def validate(conf: dict):
-    if "username" not in conf:
+def validate_config():
+    if "username" not in config:
         raise ValueError("Username not found in config")
-    if "password" not in conf:
+    if "password" not in config:
         raise ValueError("Password not found in config")
-    if "price_multiplier" not in conf:
+    if "price_multiplier" not in config:
         raise ValueError("Price multiplier not found in config")
 
 
 def main():
+    # make sure script is being run from the correct directory for cron
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
     logging.basicConfig(level=logging.INFO, filename="ESS.log")
 
-    conf = load_config()
-    validate(conf)
+    global config
+    config = load_config()
+    validate_config()
 
     # Request prices for the next day
     tomorrow = datetime.date.today() + datetime.timedelta(days=1)
@@ -129,7 +132,7 @@ def main():
         elif i == 4:
             logging.error("Failed to get the prices from the website after 5 attempts... giving up")
             return
-        logging.error("Request failed, retrying in 30 seconds, has the data for the requested day been published yet? Status code: {}".format(response.status_code))
+        logging.error("Request failed, retrying in 10 seconds. Has the data for the requested day been published yet? Status code: {}".format(response.status_code))
         time.sleep(10)
 
     # Extract the prices from the json
@@ -138,25 +141,31 @@ def main():
     start_charging_index, mean_min_price = find_three_lowest_consecutive(prices)
     start_discharging_index, mean_max_price = find_three_highest_consecutive(prices)
 
-    price_multiplier = conf["price_multiplier"]
+    # Make sure price difference makes charging justified
+    price_multiplier = config["price_multiplier"]
     should_charge = mean_min_price * price_multiplier < mean_max_price
     if not should_charge:
         logging.warning("""Price difference with specified multiplier ({}) is not big enough to justify charging the battery tonight.\n
                         Mean min price {:.2f} EUR/MWh, mean max price {:.2f} EUR/MWh""".format(price_multiplier, mean_min_price, mean_max_price))
-        asyncio.run(set_charge_and_discharge_hours(conf, should_charge, "00:00", "00:00", "00:00"))
+        asyncio.run(set_charge_and_discharge_hours(should_charge, midnight, midnight, midnight))
         return
 
     # convert start_charging_index to string
     start_charging = datetime.time(hour=start_charging_index).strftime("%H:%M")
     stop_charging = datetime.time(hour=start_charging_index + 3).strftime("%H:%M")
-    start_discharging = datetime.time(hour=start_discharging_index - 1).strftime("%H:%M")
+
+    # make sure charging and discharge hours do not overlap
+    if start_discharging_index + 3 <= start_charging_index:
+        start_discharging = datetime.time(hour=start_discharging_index - 1).strftime("%H:%M")
+    else:
+        start_discharging = datetime.time(hour=start_discharging_index).strftime("%H:%M")
 
     logging.info("Setting charging and discharging for {}".format(tomorrow.strftime("%B %d, %Y")))
     logging.info("Battery will be charged between {} and {} at the (3h) mean price of {:.2f} EUR/MWh".format(start_charging, stop_charging, mean_min_price))
     logging.info("Battery will start discharging at {} at the (3h) mean price of {:.2f} EUR/MWh".format(start_discharging, mean_max_price))
 
     # Send data to the ESS
-    asyncio.run(set_charge_and_discharge_hours(conf, should_charge, start_charging, stop_charging, start_discharging))
+    asyncio.run(set_charge_and_discharge_hours(should_charge, start_charging, stop_charging, start_discharging))
 
 
 if __name__ == "__main__":
