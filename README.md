@@ -1,17 +1,15 @@
 # Alpha-ESS charging optimizer 🔋
 
-This project aims to optimize charging and discharging times for your Alpha ESS based on day-ahead prices on the Czech energy market, 
-in order to minimize the cost of charging and to utilize the battery's potential without human intervention. 
+This project aims to maximize the cost saving potential of your Alpha ESS by optimizing times for night charging and discharging during the morning peak hours. The calculation is based on the [day-ahead prices](ttps://www.ote-cr.cz/en/short-term-markets/electricity/day-ahead-market) of the Czech energy market.
 
-Our battery takes around 3 hours to charge from 10% to full, therefore a 3h slot between 00:00 and 06:00 with the lowest price is found. 
-Discharging slot is also is set to begin between 00:00 and 12:00, since we want to make sure all the stored power is used during the day.
+Best charging slot, of configutable length, is found between 00:00 and 07:00 while the discharging slot is found between 00:00 and 12:00 to make sure all the stored power is used throughout the day.
 
-To access Alpha ESS API, you need to provide a username and password in `config.json`. Happy charging! ☀️
+To begin using this, clone the repository, fill out required fields in `config.yaml` and run the program to find and set prices for the following day. Happy charging! ☀️
 
-### Automation
-To automate this, you ought to create a cron job to run `ESS.py` every evening to compute and set the charge and discharge times for the following day.
-I setup my crontab as follows:
+## Automation
+To fully automate this, you ought to create a cron job to run `ESS.py` every day after spot prices on the next day are published.
+My crontab setup running on a RaspberryPi:
 ```
 00 18 * * * /usr/bin/python3 /home/pi/AlphaESS/ESS.py
 ```
-Bear in mind that setting up a cron job also means that the log file will be created in your home directory.
+
