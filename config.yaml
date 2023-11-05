@@ -1,5 +1,5 @@
 "username": "your_username"
 "password": "your_password"
-"charge_to_full": 3 # hours to charge battery from 0 to 100%
+"serial_number": "your_serial_number"
+"charge_to_full": 3 # how many hours to charge to full
 "price_multiplier": 1.3 # charge price multiplier to justify wear and tear on the battery
-"serial_number": "your_serial_number" # OPTIONAL if you only have one device
