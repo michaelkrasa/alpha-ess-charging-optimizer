@@ -13,8 +13,9 @@ CONFIG_PATH = "config.yaml"
 LOG_FILE = "ESS.log"
 PRICE_URL = 'https://www.ote-cr.cz/en/short-term-markets/electricity/day-ahead-market/@@chart-data?report_date='
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, filename=LOG_FILE)
+# Configure logging for cwd of file
+logging.basicConfig(level=logging.INFO, filename=LOG_FILE, format='%(asctime)s %(levelname)s: %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S')
 
 
 def load_config(path: str) -> Dict:
@@ -34,8 +35,12 @@ def get_prices_from_json(prices_json: Dict) -> List[float]:
 
 
 def find_cheapest_night_charging(electricity_prices: List[float], hours_to_charge: int) -> Tuple[int, float]:
+    num_hours_considered = 7  # The number of hours considered for night-time charging
+    if hours_to_charge > num_hours_considered:
+        raise ValueError("hours_to_charge cannot exceed the number of hours considered for night-time.")
+
     min_mean = float('inf')
-    electricity_prices = electricity_prices[:7]  # Considering only the first 7 hours of the day.
+    electricity_prices = electricity_prices[:num_hours_considered]  # Considering only the first 7 hours of the day.
     index = 0
 
     for i in range(len(electricity_prices) - hours_to_charge + 1):
@@ -99,7 +104,7 @@ async def main():
     prices = await fetch_prices_for_date(tomorrow)
     start_charge_hour, mean_charge_price = find_cheapest_night_charging(prices, config["charge_to_full"])
     stop_charge_hour = start_charge_hour + config["charge_to_full"]
-    logging.info(f"Found cheapest charging hours to be {stop_charge_hour}:00 - {stop_charge_hour}:00 "
+    logging.info(f"Found cheapest charging hours to be {start_charge_hour}:00 - {stop_charge_hour}:00 "
                  f"with mean price of {mean_charge_price:.1f} €/MWh")
 
     manager = AlphaESSManager(config)
