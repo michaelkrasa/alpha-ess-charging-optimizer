@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import logging
+import os
 from typing import List, Tuple, Dict
 
 import httpx
@@ -8,9 +9,10 @@ import yaml
 from alphaess.alphaess import alphaess
 
 # Constants
+DIR_NAME = os.path.dirname(__file__)
 MIDNIGHT = "00:00"
-CONFIG_PATH = "config.yaml"
-LOG_FILE = "ESS.log"
+CONFIG_PATH = os.path.join(DIR_NAME, "config.yaml")
+LOG_FILE = os.path.join(DIR_NAME, "ess.log")
 PRICE_URL = 'https://www.ote-cr.cz/en/short-term-markets/electricity/day-ahead-market/@@chart-data?report_date='
 
 # Configure logging for cwd of file
@@ -109,7 +111,11 @@ async def main():
 
     manager = AlphaESSManager(config)
 
-    # Format hours into strings
+    # Don't charge if price isn't low enough to justify wear and tear
+    if mean_charge_price * config["price_multiplier"] > sum(prices) / len(prices):
+        logging.info("Charging is not worth it, not sending request to ESS.")
+        return manager.authenticate_and_set_schedule(False, MIDNIGHT, MIDNIGHT)
+
     start_charging = f"{start_charge_hour:02d}:00"
     stop_charging = f"{stop_charge_hour:02d}:00"
 
