@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import backoff
 import logging
 import os
 from typing import List, Tuple, Dict
@@ -56,10 +57,27 @@ def find_cheapest_night_charging(electricity_prices: List[float], hours_to_charg
 
 async def fetch_prices_for_date(date: datetime.date) -> List[float]:
     url_date = date.strftime('%Y-%m-%d')
-    async with httpx.AsyncClient() as client:
-        response = await client.get(PRICE_URL + url_date)
-        response.raise_for_status()
+    timeout = httpx.Timeout(10.0, connect=60.0)  # Initial timeout
+
+    # Define the exponential backoff decorator
+    @backoff.on_exception(backoff.expo,
+                          (httpx.RequestError, httpx.HTTPStatusError, httpx.ReadTimeout),
+                          max_time=120)  # Set the maximum time in seconds
+    async def get_request_with_backoff(url: str) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response
+
+    try:
+        response = await get_request_with_backoff(PRICE_URL + url_date)
         return get_prices_from_json(response.json())
+    except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+        logging.error(f"Failed to fetch data from {exc.request.url!r} after retries.")
+        raise
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        raise
 
 
 class AlphaESSManager:
