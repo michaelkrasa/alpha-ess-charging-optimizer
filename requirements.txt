@@ -1,9 +1,11 @@
-aiohttp==3.8.6
+aiohappyeyeballs==2.4.3
+aiohttp==3.10.10
 aiosignal==1.3.1
 alphaess==0.0.18
 anyio==4.0.0
 async-timeout==4.0.3
 attrs==23.1.0
+backoff==2.2.1
 certifi==2023.7.22
 charset-normalizer==3.3.2
 exceptiongroup==1.1.3
@@ -12,10 +14,9 @@ h11==0.14.0
 httpcore==1.0.1
 httpx==0.25.1
 idna==3.4
-multidict==6.0.4
+multidict==6.1.0
+propcache==0.2.0
 PyYAML==6.0.1
 sniffio==1.3.0
 voluptuous==0.13.1
-yarl==1.9.2
-
-backoff~=2.2.1
+yarl==1.15.5
