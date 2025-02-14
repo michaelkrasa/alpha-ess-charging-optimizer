@@ -84,7 +84,7 @@ class EnergyStorageOptimizer:
     async def optimize_charging_schedule(self):
         """Main optimization logic to determine and set charging schedule"""
         # Fetch tomorrow's prices
-        tomorrow = datetime.date.today() + datetime.timedelta(days=0)
+        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
         prices = await self.price_fetcher.fetch_prices_for_date(tomorrow)
 
         # Find optimal charging windows
