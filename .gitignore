@@ -1,6 +1,40 @@
+# Python
 __pycache__/
-.idea/
-bin/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
 lib/
-ess.log
-pyenv.cfg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Data
+data/
+
+# UV
+uv.lock
+
+# OS
+.DS_Store
+
+# PyInstaller
+build/
+dist/
+*.spec

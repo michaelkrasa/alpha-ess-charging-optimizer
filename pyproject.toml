@@ -1,0 +1,25 @@
+[project]
+name = "alphaess-charging-optimizer"
+version = "1.0.0"
+description = "Optimize AlphaESS battery charging/discharging based on day-ahead electricity prices"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.13.2",
+    "alphaessopenapi>=0.0.17",
+    "ote-cr-price-fetcher>=0.1.1",
+    "pandas>=2.3.3",
+    "pyyaml>=6.0.2",
+    "voluptuous>=0.15.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "pyinstaller>=6.11.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
