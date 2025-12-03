@@ -69,8 +69,8 @@ price_multiplier: 1.2      # valley/peak threshold factor vs. daily mean
 
 # Battery parameters
 charge_rate_kw: 6.0
-avg_peak_load_kw: 1.8
-avg_overnight_load_kw: 0.5   # standby consumption for SOC drain estimation
+avg_peak_load_kw: 2.5
+avg_overnight_load_kw: 1.6   # standby consumption for SOC drain estimation
 min_soc: 10
 max_soc: 100
 
