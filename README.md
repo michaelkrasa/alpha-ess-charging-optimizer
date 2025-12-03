@@ -16,9 +16,13 @@ arbitrage cycles - charging when cheap and discharging when expensive.
     - Also finds mid‑day dips between peaks for extra charging opportunities
 - Arbitrage cycles
     - Pairs each valley with the next sequential peak (no skipping peaks)
+    - Extends discharge windows to cover all profitable hours (price > charge_price × 1.2)
+    - Falls back to price-based discharge detection when no peaks found
     - Up to 2 cycles per day (AlphaESS API limitation)
 - Battery‑aware sizing
     - Window length sized to real charging need based on current SOC and `charge_to_full`
+    - Full valley charging for overnight periods or depleted batteries (SOC < 30%)
+    - Accounts for household consumption between charge/discharge windows
     - Pulls battery capacity from the device (gross × usable %) when available
 - Reactive operations
     - Continuous mode re‑checks hourly and adapts to the rest of the day
@@ -66,6 +70,7 @@ price_multiplier: 1.2      # valley/peak threshold factor vs. daily mean
 # Battery parameters
 charge_rate_kw: 6.0
 avg_peak_load_kw: 1.8
+avg_overnight_load_kw: 0.5   # standby consumption for SOC drain estimation
 min_soc: 10
 max_soc: 100
 
