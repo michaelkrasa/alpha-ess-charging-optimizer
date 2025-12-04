@@ -91,11 +91,13 @@ class ESSOptimizer:
         self.price_multiplier = float(self.config['price_multiplier'])
 
         self.CHARGE_RATE_KW = float(self.config.get('charge_rate_kw', 6.0))
-        self.AVG_PEAK_LOAD_KW = float(self.config.get('avg_peak_load_kw', 1.8))
+        self.AVG_DAY_LOAD_KW = float(self.config.get('avg_day_load_kw', 1.8))
+        self.AVG_OVERNIGHT_LOAD_KW = float(self.config.get('avg_overnight_load_kw', 0.5))
         self.MIN_SOC = int(self.config.get('min_soc', 10))
         self.MAX_SOC = int(self.config.get('max_soc', 100))
         self.MIN_WINDOW_SLOTS = int(self.config.get('min_window_slots', 4))
         self.SMOOTHING_WINDOW = int(self.config.get('smoothing_window', 4))
+        self.DISCHARGE_EXTENSION_THRESHOLD = float(self.config.get('discharge_extension_threshold', 0.85))
         self.battery_capacity_kwh: Optional[float] = None
 
         Path('logs').mkdir(exist_ok=True)
@@ -158,8 +160,8 @@ class ESSOptimizer:
 
     def estimate_soc_after_discharge(self, current_soc: float, discharge_hours: float) -> float:
         """Estimate SOC after discharging for given hours"""
-        capacity = self.battery_capacity_kwh or 15.5
-        kwh_discharged = discharge_hours * self.AVG_PEAK_LOAD_KW
+        capacity = self.battery_capacity_kwh
+        kwh_discharged = discharge_hours * self.AVG_DAY_LOAD_KW
         soc_drop = (kwh_discharged / capacity) * 100
         return max(self.MIN_SOC, current_soc - soc_drop)
 
@@ -247,10 +249,7 @@ class ESSOptimizer:
 
         return merged
 
-    def _find_contiguous_regions(
-            self, smoothed: List[float], original: List[float],
-            threshold: float, window_type: str, below: bool
-    ) -> List[PriceWindow]:
+    def _find_contiguous_regions(self, smoothed: List[float], original: List[float],threshold: float, window_type: str, below: bool) -> List[PriceWindow]:
         """Find contiguous regions above/below threshold"""
         regions = []
         in_region = False
@@ -274,8 +273,7 @@ class ESSOptimizer:
 
         return regions
 
-    def find_arbitrage_cycles(
-            self, valleys: List[PriceWindow], peaks: List[PriceWindow],
+    def find_arbitrage_cycles(self, valleys: List[PriceWindow], peaks: List[PriceWindow],
             current_soc: float, slot_prices: Optional[Dict[int, float]] = None
     ) -> List[ArbitrageCycle]:
         """Match valleys with discharge opportunities to create arbitrage cycles"""
@@ -295,9 +293,7 @@ class ESSOptimizer:
                     break
 
             if next_peak is None and slot_prices:
-                next_peak = self._find_profitable_discharge_window(
-                    valley.avg_price, slot_prices, after_slot=valley.end_slot
-                )
+                next_peak = self._find_profitable_discharge_window(valley.avg_price, slot_prices, after_slot=valley.end_slot)
                 if next_peak:
                     logging.info(f"Found profitable window from prices: {next_peak}")
 
@@ -317,11 +313,11 @@ class ESSOptimizer:
             # Use full valley for overnight or depleted battery
             is_overnight = valley.start_slot < 28
             if is_overnight or estimated_soc < 30:
-                optimal_charge_window = self._create_full_valley_charge_window(valley)
+                optimal_charge_window = self._create_full_valley_charge_window(valley, slot_prices)
                 logging.info(f"Full valley charging (SOC={estimated_soc:.0f}%, overnight={is_overnight})")
             else:
-                slots_needed = self.calculate_charging_slots_needed(estimated_soc, 100)
-                optimal_charge_window = self._create_optimal_charge_window(valley, slots_needed)
+                slots_needed = self.calculate_charging_slots_needed(estimated_soc, self.MAX_SOC)
+                optimal_charge_window = self._create_optimal_charge_window(valley, slots_needed, slot_prices)
 
             # Extend discharge to cover all profitable hours
             next_valley_start = SLOTS_PER_DAY
@@ -330,9 +326,7 @@ class ESSOptimizer:
                     next_valley_start = v.start_slot
                     break
 
-            extended_discharge = self._extend_discharge_window(
-                next_peak, valley.avg_price, slot_prices, max_end_slot=next_valley_start
-            )
+            extended_discharge = self._extend_discharge_window(next_peak, valley.avg_price, slot_prices, max_end_slot=next_valley_start)
 
             cycles.append(ArbitrageCycle(optimal_charge_window, extended_discharge, spread))
             used_peaks.add(id(next_peak))
@@ -343,11 +337,9 @@ class ESSOptimizer:
 
         return cycles
 
-    def _find_profitable_discharge_window(
-            self, charge_price: float, slot_prices: Dict[int, float], after_slot: int = 0
-    ) -> Optional[PriceWindow]:
+    def _find_profitable_discharge_window(self, charge_price: float, slot_prices: Dict[int, float], after_slot: int = 0) -> Optional[PriceWindow]:
         """Find profitable discharge window from prices when no peaks detected"""
-        profit_threshold = charge_price * 1.2
+        profit_threshold = charge_price * self.price_multiplier
         best_window, best_avg = None, 0
         in_window, window_start = False, 0
 
@@ -372,19 +364,31 @@ class ESSOptimizer:
             self, peak: PriceWindow, charge_price: float,
             slot_prices: Optional[Dict[int, float]], max_end_slot: int = SLOTS_PER_DAY
     ) -> PriceWindow:
-        """Extend discharge window to include all profitable hours around peak"""
+        """Extend discharge window to include profitable hours around peak.
+        
+        Uses different thresholds for backward vs forward extension:
+        - Backward: Only extend into slots with prices close to peak average
+          (controlled by DISCHARGE_EXTENSION_THRESHOLD, default 85%)
+        - Forward: Extend into all profitable slots (price > charge_price * multiplier)
+        """
         if slot_prices is None:
             return peak
 
-        profit_threshold = charge_price * 1.2
+        profit_threshold = charge_price * self.price_multiplier
+        # For backward extension, require price to be at least X% of peak average
+        # This prevents extending into mediocre slots before the peak
+        backward_threshold = peak.avg_price * self.DISCHARGE_EXTENSION_THRESHOLD
 
         extended_start = peak.start_slot
         for slot in range(peak.start_slot - 1, -1, -1):
-            if slot_prices.get(slot, 0) >= profit_threshold:
+            slot_price = slot_prices.get(slot, 0)
+            # Backward extension requires BOTH: profitable AND close to peak value
+            if slot_price >= profit_threshold and slot_price >= backward_threshold:
                 extended_start = slot
             else:
                 break
 
+        # Forward extension: just needs to be profitable
         extended_end = peak.end_slot
         for slot in range(peak.end_slot, min(max_end_slot, SLOTS_PER_DAY)):
             if slot_prices.get(slot, 0) >= profit_threshold:
@@ -403,33 +407,78 @@ class ESSOptimizer:
 
     def _estimate_consumption_soc_drain(self, hours: float) -> float:
         """Estimate SOC drain from household consumption"""
-        capacity = self.battery_capacity_kwh or 15.5
-        avg_consumption_kw = float(self.config.get('avg_overnight_load_kw', 0.5))
-        return (hours * avg_consumption_kw / capacity) * 100
+        return (hours * self.AVG_DAY_LOAD_KW / self.battery_capacity_kwh) * 100
 
-    def _create_full_valley_charge_window(self, valley: PriceWindow) -> PriceWindow:
-        """Use full valley duration for charging (depleted battery)"""
-        max_charge_slots = int(self.charge_hours * 4 * 1.2)
+    def _find_cheapest_window_in_valley(
+            self, valley: PriceWindow, slots_needed: int, slot_prices: Dict[int, float]
+    ) -> Tuple[int, int, float]:
+        """Find the cheapest consecutive N-slot window within a valley.
+        
+        Slides through all possible positions within the valley to find
+        the window with the lowest average price.
+        
+        Returns: (start_slot, end_slot, avg_price)
+        """
+        valley_start = valley.start_slot
+        valley_end = valley.end_slot
+        valley_length = valley_end - valley_start
+        
+        # Clamp slots_needed to valley length
+        actual_slots = min(slots_needed, valley_length)
+        actual_slots = max(4, actual_slots)  # Minimum 1 hour
+        
+        if actual_slots >= valley_length:
+            # Window fills entire valley, no optimization possible
+            prices = [slot_prices[s] for s in range(valley_start, valley_end)]
+            avg = sum(prices) / len(prices)
+            return valley_start, valley_end, avg
+        
+        # Slide through valley to find cheapest window
+        best_start = valley_start
+        best_avg = float('inf')
+        
+        for start in range(valley_start, valley_end - actual_slots + 1):
+            end = start + actual_slots
+            window_prices = [slot_prices[s] for s in range(start, end)]
+            avg = sum(window_prices) / len(window_prices)
+            
+            if avg < best_avg:
+                best_avg = avg
+                best_start = start
+        
+        best_end = best_start + actual_slots
+        logging.info(f"Optimal charge window in valley: {best_start // 4:02d}:{(best_start % 4) * 15:02d}-"
+                     f"{best_end // 4:02d}:{(best_end % 4) * 15:02d} @ {best_avg:.0f} "
+                     f"(valley was {valley.start_time}-{valley.end_time})")
+        
+        return best_start, best_end, best_avg
+
+    def _create_full_valley_charge_window(
+            self, valley: PriceWindow, slot_prices: Dict[int, float]
+    ) -> PriceWindow:
+        """Use optimal window within valley for charging (depleted battery)"""
+        max_charge_slots = int(self.charge_hours * 4 * self.price_multiplier)
         actual_slots = min(valley.end_slot - valley.start_slot, max_charge_slots)
         actual_slots = max(4, actual_slots)
-        return PriceWindow(valley.start_slot, valley.start_slot + actual_slots, valley.avg_price, 'valley')
+        
+        start, end, avg = self._find_cheapest_window_in_valley(valley, actual_slots, slot_prices)
+        return PriceWindow(start, end, avg, 'valley')
 
-    def _create_optimal_charge_window(self, valley: PriceWindow, slots_needed: int) -> PriceWindow:
+    def _create_optimal_charge_window(
+            self, valley: PriceWindow, slots_needed: int, slot_prices: Dict[int, float]
+    ) -> PriceWindow:
         """Create charge window of optimal duration within valley"""
         actual_slots = min(slots_needed, valley.end_slot - valley.start_slot)
         actual_slots = max(4, actual_slots)
-        return PriceWindow(valley.start_slot, valley.start_slot + actual_slots, valley.avg_price, 'valley')
+        
+        start, end, avg = self._find_cheapest_window_in_valley(valley, actual_slots, slot_prices)
+        return PriceWindow(start, end, avg, 'valley')
 
     def analyze_day(self, slot_prices: Dict[int, float], current_soc: float) -> OptimizationPlan:
         """Analyze day's prices and create optimization plan"""
         prices = [slot_prices[i] for i in range(SLOTS_PER_DAY)]
 
-        plan = OptimizationPlan(
-            date=datetime.now(),
-            daily_mean=sum(prices) / len(prices),
-            daily_min=min(prices),
-            daily_max=max(prices)
-        )
+        plan = OptimizationPlan(date=datetime.now(), daily_mean=sum(prices) / len(prices), daily_min=min(prices), daily_max=max(prices))
 
         plan.valleys, plan.peaks = self.detect_valleys_and_peaks(slot_prices)
         plan.cycles = self.find_arbitrage_cycles(plan.valleys, plan.peaks, current_soc, slot_prices)
@@ -461,16 +510,14 @@ class ESSOptimizer:
             'recommendation': 'wait' if tomorrow_valley_avg < today_valley_avg * 0.95 else 'charge_now'
         }
 
-    async def set_charging_schedule(
-            self, enable: bool, period1: Optional[Tuple[str, str]] = None, period2: Optional[Tuple[str, str]] = None
-    ) -> bool:
+    async def set_charging_schedule(self, enable: bool, period1: Optional[Tuple[str, str]] = None, period2: Optional[Tuple[str, str]] = None) -> bool:
         """Set battery charging schedule"""
         try:
             t1_start, t1_end = period1 if period1 else ("00:00", "00:00")
             t2_start, t2_end = period2 if period2 else ("00:00", "00:00")
 
             await self.client.updateChargeConfigInfo(
-                sysSn=self.serial_number, batHighCap=100, gridCharge=1 if enable else 0,
+                sysSn=self.serial_number, batHighCap=self.MAX_SOC, gridCharge=1 if enable else 0,
                 timeChaf1=t1_start, timeChae1=t1_end, timeChaf2=t2_start, timeChae2=t2_end
             )
 
@@ -486,16 +533,14 @@ class ESSOptimizer:
             logging.error(f"Failed to set charging schedule: {e}")
             return False
 
-    async def set_discharge_schedule(
-            self, enable: bool, period1: Optional[Tuple[str, str]] = None, period2: Optional[Tuple[str, str]] = None
-    ) -> bool:
+    async def set_discharge_schedule(self, enable: bool, period1: Optional[Tuple[str, str]] = None, period2: Optional[Tuple[str, str]] = None) -> bool:
         """Set battery discharge schedule"""
         try:
             t1_start, t1_end = period1 if period1 else ("00:00", "00:00")
             t2_start, t2_end = period2 if period2 else ("00:00", "00:00")
 
             await self.client.updateDisChargeConfigInfo(
-                sysSn=self.serial_number, batUseCap=10, ctrDis=1 if enable else 0,
+                sysSn=self.serial_number, batUseCap=self.MIN_SOC, ctrDis=1 if enable else 0,
                 timeDisf1=t1_start, timeDise1=t1_end, timeDisf2=t2_start, timeDise2=t2_end
             )
 
