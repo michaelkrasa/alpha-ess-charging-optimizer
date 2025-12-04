@@ -13,7 +13,7 @@ from ESS import ESSOptimizer, PriceWindow
 
 @pytest.fixture
 def optimizer():
-    """Create an optimizer instance with mocked config"""
+    """Create an optimizer instance with mocked config and battery capacity"""
     with patch('ESS.Config') as mock_config, \
             patch('ESS.alphaess') as mock_client, \
             patch('ESS.PriceFetcher') as mock_fetcher:
@@ -25,6 +25,7 @@ def optimizer():
             'charge_to_full': 3.0,
             'price_multiplier': 1.2,
             'avg_overnight_load_kw': 0.5,
+            'avg_day_load_kw': 1.8,
         }
         mock_config_instance = MagicMock()
         mock_config_instance.__getitem__ = lambda self, key: config_values[key]
@@ -41,6 +42,8 @@ def optimizer():
         mock_fetcher.return_value = mock_fetcher_instance
 
         opt = ESSOptimizer()
+        # Set battery capacity (normally fetched from API)
+        opt.battery_capacity_kwh = 15.5
         return opt
 
 
@@ -662,17 +665,18 @@ class TestConsumptionBetweenWindows:
     """Test SOC drain estimation between charge/discharge windows"""
 
     def test_overnight_consumption_drain(self, optimizer):
-        """Test SOC drain during overnight gap"""
-        optimizer.battery_capacity_kwh = 15.5
-        # 6 hours at 0.5 kW = 3 kWh = ~19% of 15.5 kWh
+        """Test SOC drain during overnight gap using AVG_DAY_LOAD_KW"""
+        # 6 hours at 1.8 kW (AVG_DAY_LOAD_KW) = 10.8 kWh = ~70% of 15.5 kWh
         drain = optimizer._estimate_consumption_soc_drain(6.0)
-        assert 15 < drain < 25, f"Expected ~19% drain, got {drain:.1f}%"
+        expected = (6.0 * optimizer.AVG_DAY_LOAD_KW / optimizer.battery_capacity_kwh) * 100
+        assert abs(drain - expected) < 0.1, f"Expected {expected:.1f}% drain, got {drain:.1f}%"
 
     def test_short_gap_consumption(self, optimizer):
         """Test SOC drain during short 1-hour gap"""
-        optimizer.battery_capacity_kwh = 15.5
+        # 1 hour at 1.8 kW = 1.8 kWh = ~11.6% of 15.5 kWh
         drain = optimizer._estimate_consumption_soc_drain(1.0)
-        assert 2 < drain < 5, f"Expected ~3% drain for 1h, got {drain:.1f}%"
+        expected = (1.0 * optimizer.AVG_DAY_LOAD_KW / optimizer.battery_capacity_kwh) * 100
+        assert abs(drain - expected) < 0.1, f"Expected {expected:.1f}% drain, got {drain:.1f}%"
 
     def test_zero_gap_no_drain(self, optimizer):
         """Test no drain when gap is zero"""
