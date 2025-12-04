@@ -158,7 +158,7 @@ class ESSOptimizer:
 
     def estimate_soc_after_discharge(self, current_soc: float, discharge_hours: float) -> float:
         """Estimate SOC after discharging for given hours"""
-        capacity = self.battery_capacity_kwh
+        capacity = self.battery_capacity_kwh or 15.5  # Fallback if not fetched from API
         kwh_discharged = discharge_hours * self.AVG_DAY_LOAD_KW
         soc_drop = (kwh_discharged / capacity) * 100
         return max(self.MIN_SOC, current_soc - soc_drop)
@@ -272,7 +272,7 @@ class ESSOptimizer:
         return regions
 
     def find_arbitrage_cycles(self, valleys: List[PriceWindow], peaks: List[PriceWindow],
-            current_soc: float, slot_prices: Optional[Dict[int, float]] = None
+            current_soc: float, slot_prices: Dict[int, float]
     ) -> List[ArbitrageCycle]:
         """Match valleys with discharge opportunities to create arbitrage cycles"""
         cycles = []
@@ -290,7 +290,7 @@ class ESSOptimizer:
                     next_peak = peak
                     break
 
-            if next_peak is None and slot_prices:
+            if next_peak is None:
                 next_peak = self._find_profitable_discharge_window(valley.avg_price, slot_prices, after_slot=valley.end_slot)
                 if next_peak:
                     logging.info(f"Found profitable window from prices: {next_peak}")
@@ -405,7 +405,8 @@ class ESSOptimizer:
 
     def _estimate_consumption_soc_drain(self, hours: float) -> float:
         """Estimate SOC drain from household consumption"""
-        return (hours * self.AVG_DAY_LOAD_KW / self.battery_capacity_kwh) * 100
+        capacity = self.battery_capacity_kwh or 15.5  # Fallback if not fetched from API
+        return (hours * self.AVG_DAY_LOAD_KW / capacity) * 100
 
     def _find_cheapest_window_in_valley(
             self, valley: PriceWindow, slots_needed: int, slot_prices: Dict[int, float]

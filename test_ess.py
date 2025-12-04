@@ -690,31 +690,47 @@ class TestFullValleyCharging:
     def test_full_valley_uses_entire_duration(self, optimizer):
         """Test that full valley window uses valley duration"""
         valley = PriceWindow(start_slot=0, end_slot=16, avg_price=100, window_type='valley')
+        # Create flat prices for the valley
+        slot_prices = {i: 100 for i in range(16)}
 
-        charge_window = optimizer._create_full_valley_charge_window(valley)
+        charge_window = optimizer._create_charge_window(valley, slot_prices)
 
         # Should use full valley (4 hours) since charge_hours is 3
         assert charge_window.duration_hours >= 3.0
-        assert charge_window.start_slot == valley.start_slot
 
     def test_full_valley_caps_at_max(self, optimizer):
         """Test that full valley is capped at reasonable max"""
         # Very long valley (8 hours)
         valley = PriceWindow(start_slot=0, end_slot=32, avg_price=100, window_type='valley')
+        slot_prices = {i: 100 for i in range(32)}
 
-        charge_window = optimizer._create_full_valley_charge_window(valley)
+        charge_window = optimizer._create_charge_window(valley, slot_prices)
 
         # Should cap at ~120% of charge_hours (3 * 1.2 = 3.6h)
         assert charge_window.duration_hours <= 4.0
 
     def test_full_valley_minimum_one_hour(self, optimizer):
-        """Test minimum charge duration is 1 hour"""
-        # Very short valley (30 min)
-        valley = PriceWindow(start_slot=0, end_slot=2, avg_price=100, window_type='valley')
+        """Test minimum charge duration is 1 hour when valley allows"""
+        # Valley of 1.5 hours - should use at least 1 hour
+        valley = PriceWindow(start_slot=0, end_slot=6, avg_price=100, window_type='valley')
+        slot_prices = {i: 100 for i in range(6)}
 
-        charge_window = optimizer._create_full_valley_charge_window(valley)
+        charge_window = optimizer._create_charge_window(valley, slot_prices)
 
         assert charge_window.duration_hours >= 1.0
+
+    def test_short_valley_uses_full_duration(self, optimizer):
+        """Test that a very short valley uses its full duration"""
+        # Very short valley (30 min) - can't extend beyond valley
+        valley = PriceWindow(start_slot=0, end_slot=2, avg_price=100, window_type='valley')
+        slot_prices = {i: 100 for i in range(2)}
+
+        charge_window = optimizer._create_charge_window(valley, slot_prices)
+
+        # Should use entire valley even though it's less than 1 hour
+        assert charge_window.duration_hours == 0.5
+        assert charge_window.start_slot == 0
+        assert charge_window.end_slot == 2
 
 
 class TestDischargeWindowExtension:
@@ -727,15 +743,17 @@ class TestDischargeWindowExtension:
         # Peak at 16:00-17:00 (slots 64-68)
         for i in range(64, 68):
             prices[i] = 250
-        # Profitable surroundings (above 120 = charge_price * 1.2)
-        for i in range(60, 64):  # Before peak
-            prices[i] = 150
+        # Backward extension requires >= 85% of peak avg (250 * 0.85 = 212.5)
+        # AND >= profit_threshold (100 * 1.2 = 120)
+        for i in range(60, 64):  # Before peak - high enough for backward threshold
+            prices[i] = 220
+        # Forward extension only requires >= profit_threshold (120)
         for i in range(68, 76):  # After peak
             prices[i] = 140
         return prices
 
     def test_extends_backwards(self, optimizer, prices_with_profitable_surroundings):
-        """Test that discharge window extends backwards into profitable slots"""
+        """Test that discharge window extends backwards into high-value slots"""
         peak = PriceWindow(start_slot=64, end_slot=68, avg_price=250, window_type='peak')
         charge_price = 100
 
