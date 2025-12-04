@@ -90,9 +90,7 @@ class ESSOptimizer:
         self.charge_hours = float(self.config['charge_to_full'])
         self.price_multiplier = float(self.config['price_multiplier'])
 
-        self.CHARGE_RATE_KW = float(self.config.get('charge_rate_kw', 6.0))
         self.AVG_DAY_LOAD_KW = float(self.config.get('avg_day_load_kw', 1.8))
-        self.AVG_OVERNIGHT_LOAD_KW = float(self.config.get('avg_overnight_load_kw', 0.5))
         self.MIN_SOC = int(self.config.get('min_soc', 10))
         self.MAX_SOC = int(self.config.get('max_soc', 100))
         self.MIN_WINDOW_SLOTS = int(self.config.get('min_window_slots', 4))
@@ -313,11 +311,11 @@ class ESSOptimizer:
             # Use full valley for overnight or depleted battery
             is_overnight = valley.start_slot < 28
             if is_overnight or estimated_soc < 30:
-                optimal_charge_window = self._create_full_valley_charge_window(valley, slot_prices)
+                optimal_charge_window = self._create_charge_window(valley, slot_prices)
                 logging.info(f"Full valley charging (SOC={estimated_soc:.0f}%, overnight={is_overnight})")
             else:
                 slots_needed = self.calculate_charging_slots_needed(estimated_soc, self.MAX_SOC)
-                optimal_charge_window = self._create_optimal_charge_window(valley, slots_needed, slot_prices)
+                optimal_charge_window = self._create_charge_window(valley, slot_prices, slots_needed)
 
             # Extend discharge to cover all profitable hours
             next_valley_start = SLOTS_PER_DAY
@@ -453,21 +451,17 @@ class ESSOptimizer:
         
         return best_start, best_end, best_avg
 
-    def _create_full_valley_charge_window(
-            self, valley: PriceWindow, slot_prices: Dict[int, float]
+    def _create_charge_window(
+            self, valley: PriceWindow, slot_prices: Dict[int, float], slots_needed: Optional[int] = None
     ) -> PriceWindow:
-        """Use optimal window within valley for charging (depleted battery)"""
-        max_charge_slots = int(self.charge_hours * 4 * self.price_multiplier)
-        actual_slots = min(valley.end_slot - valley.start_slot, max_charge_slots)
-        actual_slots = max(4, actual_slots)
+        """Create optimal charge window within valley.
         
-        start, end, avg = self._find_cheapest_window_in_valley(valley, actual_slots, slot_prices)
-        return PriceWindow(start, end, avg, 'valley')
-
-    def _create_optimal_charge_window(
-            self, valley: PriceWindow, slots_needed: int, slot_prices: Dict[int, float]
-    ) -> PriceWindow:
-        """Create charge window of optimal duration within valley"""
+        Args:
+            slots_needed: If None, uses max charge duration (for depleted battery)
+        """
+        if slots_needed is None:
+            slots_needed = int(self.charge_hours * 4 * self.price_multiplier)
+        
         actual_slots = min(slots_needed, valley.end_slot - valley.start_slot)
         actual_slots = max(4, actual_slots)
         
