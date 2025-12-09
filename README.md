@@ -1,165 +1,265 @@
-# AlphaESS Charging Optimizer (Dynamic Reactive Strategy)
+<p align="center">
+  <h1 align="center">⚡ AlphaESS Charging Optimizer</h1>
+  <p align="center">
+    <strong>Dynamic battery arbitrage against Czech day-ahead electricity prices</strong>
+  </p>
+  <p align="center">
+    <a href="#-quick-start">Quick Start</a> •
+    <a href="#-aws-lambda-deployment">Lambda Deploy</a> •
+    <a href="#-how-it-works">How It Works</a> •
+    <a href="#%EF%B8%8F-configuration">Configuration</a>
+  </p>
+</p>
 
-Optimize AlphaESS battery charging/discharging against Czech day‑ahead electricity prices (15‑minute slots). This project dynamically detects price valleys and peaks to create
-arbitrage cycles - charging when cheap and discharging when expensive.
+---
 
-- Language/Tooling: Python 3.12 + uv
-- Data sources: OTE day‑ahead prices (15‑min) + AlphaESS API
-- Run modes: Continuous monitoring or single‑shot (for cron)
+Automatically charge your AlphaESS battery when electricity is cheap and discharge when expensive. Uses 15-minute price slots from OTE (Czech day-ahead market) to maximize savings through smart arbitrage cycles.
 
-## Key Features
-
-- Dynamic pattern detection
-    - Smooths prices and derives thresholds from the day’s mean price
-    - Valleys (charge): price < mean / price_multiplier
-    - Peaks (discharge): price > mean × price_multiplier
-    - Also finds mid‑day dips between peaks for extra charging opportunities
-- Arbitrage cycles
-    - Pairs each valley with the next sequential peak (no skipping peaks)
-    - Extends discharge windows to cover all profitable hours (price > charge_price × 1.2)
-    - Falls back to price-based discharge detection when no peaks found
-    - Up to 2 cycles per day (AlphaESS API limitation)
-- Battery‑aware sizing
-    - Window length sized to real charging need based on current SOC and `charge_to_full`
-    - Full valley charging for overnight periods or depleted batteries (SOC < 30%)
-    - Accounts for household consumption between charge/discharge windows
-    - Pulls battery capacity from the device (gross × usable %) when available
-- Reactive operations
-    - Continuous mode re‑checks hourly and adapts to the rest of the day
-    - Evening planning runs at 18:00 when next‑day prices are published
-    - Critical SOC handling triggers re‑optimization
-
-## Quick Start
-
-Prerequisites:
-
-- Python 3.12+
-- uv (fast Python package/dependency manager)
-
-1) Clone the repository
-
-```bash
-git clone https://github.com/michaelkrasa/AlphaESS-charging-optimizer.git
-cd AlphaESS-charging-optimizer
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  💰 CHEAP (Valley)          💸 EXPENSIVE (Peak)                 │
+│  ════════════════          ═══════════════════                  │
+│  03:00-06:00 @ 45€         17:00-20:00 @ 180€                   │
+│  ↓ CHARGE ↓                ↓ DISCHARGE ↓                        │
+│  Grid → Battery            Battery → Home                       │
+│                                                                 │
+│  Spread: 135 €/MWh  ✨                                          │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-2) Create a `.env` file with your AlphaESS credentials
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| 🔍 **Dynamic Detection** | Auto-detects valleys & peaks from daily price patterns |
+| 🔄 **Arbitrage Cycles** | Pairs charge windows with discharge windows for max spread |
+| 🔋 **Battery-Aware** | Sizes windows based on actual SOC and capacity |
+| 📊 **15-min Granularity** | Uses OTE's 96 daily price slots for precision |
+| ☁️ **Serverless Ready** | Deploy to AWS Lambda or run locally |
+| 🕐 **Reactive Mode** | Hourly re-optimization adapts to changing conditions |
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.12+
+- [uv](https://github.com/astral-sh/uv) (fast Python package manager)
+- AlphaESS Open API credentials
+
+### Installation
+
+```bash
+# Clone
+git clone https://github.com/michaelkrasa/AlphaESS-charging-optimizer.git
+cd AlphaESS-charging-optimizer
+
+# Install dependencies
+uv sync
+```
+
+### Configuration
+
+Create a `.env` file with your credentials:
+
+```bash
+cp .env.example .env
+# Edit .env with your values
+```
 
 ```dotenv
+# Required - AlphaESS API
 APP_ID=your_alpha_ess_app_id
 APP_SECRET=your_alpha_ess_app_secret
 SERIAL_NUMBER=your_system_serial
 ```
 
-Notes:
-
-- Do not commit this file. Keep credentials out of version control.
-
-3) Review/adjust `config.yaml` for non‑secret settings
+Tune behavior in `config.yaml`:
 
 ```yaml
-# AlphaESS API credentials (optional here; .env overrides these)
-app_id: your_alpha_ess_app_id
-app_secret: your_alpha_ess_app_secret
-serial_number: your_system_serial
-
-# Optimization behavior
-charge_to_full: 3          # hours to charge 0→100%
-price_multiplier: 1.2      # valley/peak threshold factor vs. daily mean
-
-# Battery parameters
-charge_rate_kw: 6.0
-avg_peak_load_kw: 2.5
-avg_overnight_load_kw: 1.6   # standby consumption for SOC drain estimation
-min_soc: 10
-max_soc: 100
-
-# Technical parameters (15‑min slots)
-min_window_slots: 2
-smoothing_window: 2
+charge_to_full: 3        # Hours to charge 0→100%
+price_multiplier: 1.2    # Valley/peak threshold vs daily mean
+min_soc: 10              # Don't discharge below this %
+max_soc: 100             # Charge target %
 ```
 
-4) Sync dependencies (from `pyproject.toml`)
+### Run
 
 ```bash
-uv sync
+# Continuous monitoring (recommended)
+uv run ESS.py
+
+# Single optimization for tomorrow (cron-friendly)
+uv run ESS.py --once
 ```
 
-5) Run
+---
 
-- Continuous monitoring (recommended):
-  ```bash
-  uv run ESS.py
-  ```
-- Single‑shot (e.g., cron at 18:00):
-  ```bash
-  uv run ESS.py --once
-  ```
+## ☁️ AWS Lambda Deployment
 
-## How It Works (ESS.py)
+Run as a serverless function - no server required, pay only for execution time.
 
-- Fetches 96 price slots (15‑min) for a target day
-- Smooths prices (moving average) and computes daily mean
-- Derives thresholds using `price_multiplier`:
-    - Valley: `price < mean / price_multiplier`
-    - Peak: `price > mean * price_multiplier`
-- Detects contiguous regions above/below thresholds, merges overlaps, and adds mid‑peak valleys
-- Builds arbitrage cycles by pairing each valley with the next peak
-- Sizes charging windows to actual need (~SOC to 100%) while respecting valley length
-- Programs AlphaESS API:
-    - Charging: `updateChargeConfigInfo` (up to 2 windows)
-    - Discharging: `updateDisChargeConfigInfo` (up to 2 windows)
-
-Battery awareness:
-
-- SOC from `LastPower.soc`
-- Capacity from `cobat` × `usCapacity`% when available
-- Estimates charging time and discharge SOC impact using configured rates
-
-## Run Modes
-
-- Continuous (`uv run ESS.py`)
-    - 18:00: plan next day (when next‑day prices are available)
-    - Hourly: reactive re‑analysis for the remainder of the day
-    - Critical SOC (< 20%): triggers immediate re‑optimization
-- Single run (`uv run ESS.py --once`)
-    - Plans for tomorrow and exits (useful for cron/schedulers)
-
-## Logging
-
-Logs to both console and file:
-
-- `logs/ess_optimizer.log`
-
-## Configuration and Secrets
-
-- Non‑secret configuration lives in `config.yaml`.
-- Secrets and device identifiers live in `.env`.
-- `config.py` loads `.env` automatically and overrides these keys from `config.yaml` if present:
-    - `app_id` ← `APP_ID`
-    - `app_secret` ← `APP_SECRET`
-    - `serial_number` ← `SERIAL_NUMBER`
-
-## Testing
-
-Use pytest via uv:
+### Quick Deploy
 
 ```bash
-# Run tests
-uv run pytest -v
+# 1. Configure (edit .env with AWS settings)
+cp .env.example .env
+
+# 2. Deploy to AWS
+./deploy-lambda.sh
 ```
 
-## Automation Examples
+The script will:
+- ✅ Build Docker image (arm64 for Graviton)
+- ✅ Push to Amazon ECR
+- ✅ Update Lambda function
+- ✅ Configure environment variables
 
-Cron (Linux/macOS) — run once at 18:00 daily:
+### Lambda Configuration
+
+| Setting | Value |
+|---------|-------|
+| **Architecture** | arm64 (Graviton) |
+| **Timeout** | 30 seconds |
+| **Memory** | 256 MB |
+| **Trigger** | EventBridge @ 17:00 UTC daily |
+
+### Invocation Modes
+
+```json
+{"mode": "tomorrow"}   // Default - optimize for next day
+{"mode": "today"}      // Re-optimize current day  
+{"mode": "reactive"}   // Hourly check based on current SOC
+```
+
+### Schedule with EventBridge
+
+```bash
+# Daily at 17:00 UTC (18:00 CET)
+aws events put-rule \
+  --name "ess-daily-optimization" \
+  --schedule-expression "cron(0 17 * * ? *)"
+```
+
+---
+
+## 🧠 How It Works
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Fetch 96    │────▶│  Detect      │────▶│  Build       │
+│  Price Slots │     │  Valleys &   │     │  Arbitrage   │
+│  (15-min)    │     │  Peaks       │     │  Cycles      │
+└──────────────┘     └──────────────┘     └──────────────┘
+                                                 │
+                                                 ▼
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Done! ✅    │◀────│  Program     │◀────│  Size to     │
+│              │     │  AlphaESS    │     │  Battery     │
+│              │     │  API         │     │  SOC         │
+└──────────────┘     └──────────────┘     └──────────────┘
+```
+
+### Price Analysis
+
+1. **Smooth** prices with moving average to reduce noise
+2. **Calculate** daily mean price
+3. **Detect valleys:** `price < mean / price_multiplier`
+4. **Detect peaks:** `price > mean × price_multiplier`
+5. **Find** mid-day dips between peaks for extra opportunities
+
+### Arbitrage Matching
+
+- Each valley pairs with the next sequential peak
+- Discharge windows extend to cover all profitable hours
+- Up to **2 cycles per day** (AlphaESS API limitation)
+
+### Battery Intelligence
+
+- Reads actual SOC from device
+- Pulls capacity (gross × usable %)
+- Sizes charge windows to actual need
+- Accounts for consumption between windows
+
+---
+
+## ⚙️ Configuration
+
+### Environment Variables (`.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `APP_ID` | ✅ | AlphaESS API app ID |
+| `APP_SECRET` | ✅ | AlphaESS API secret |
+| `SERIAL_NUMBER` | ✅ | Your ESS serial number |
+| `AWS_ACCOUNT_ID` | Lambda | AWS account for ECR |
+| `ECR_REPO` | Lambda | ECR repository name |
+
+### Optimization Settings (`config.yaml`)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `charge_to_full` | 3 | Hours to charge 0→100% |
+| `price_multiplier` | 1.2 | Threshold factor vs daily mean |
+| `min_soc` | 10 | Minimum discharge SOC % |
+| `max_soc` | 100 | Target charge SOC % |
+| `avg_day_load_kw` | 1.8 | Avg household load for SOC estimation |
+| `min_window_slots` | 2 | Minimum window size (×15 min) |
+| `smoothing_window` | 2 | Price smoothing window (×15 min) |
+
+---
+
+## 📁 Project Structure
+
+```
+├── ESS.py              # Main optimizer logic
+├── config.py           # Configuration loader
+├── config.yaml         # Optimization settings
+├── lambda_handler.py   # AWS Lambda entry point
+├── Dockerfile          # Lambda container (arm64)
+├── deploy-lambda.sh    # One-command AWS deployment
+├── .env.example        # Environment template
+└── test_ess.py         # Test suite
+```
+
+---
+
+## 🧪 Testing
+
+```bash
+uv run pytest test_ess.py -v
+```
+
+---
+
+## ⏰ Automation
+
+### Cron (Linux/macOS)
 
 ```cron
+# Run daily at 18:00
 0 18 * * * cd /path/to/AlphaESS-charging-optimizer && uv run ESS.py --once
 ```
 
-## Notes
+### AWS Lambda + EventBridge
 
-- Target market: Czech day‑ahead prices (OTE), 15‑minute granularity.
-- AlphaESS API limitations restrict to two charge/discharge windows per day.
+See [Lambda Deployment](#️-aws-lambda-deployment) section above.
 
-Happy arbitrage! ⚡️🔋
+---
+
+## 📝 Notes
+
+- **Target market:** Czech OTE day-ahead prices (15-min granularity)
+- **API limitation:** Max 2 charge + 2 discharge windows per day
+- **Prices published:** ~14:00 for next day → run optimization at 18:00
+
+---
+
+## 📄 License
+
+MIT
+
+---
+
+<p align="center">
+  <strong>Happy arbitrage! ⚡🔋</strong>
+</p>
