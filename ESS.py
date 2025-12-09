@@ -7,9 +7,12 @@ Dynamically detects valleys and peaks from price data - no hardcoded times.
 """
 
 import asyncio
+import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict
 
@@ -98,15 +101,24 @@ class ESSOptimizer:
         self.DISCHARGE_EXTENSION_THRESHOLD = float(self.config.get('discharge_extension_threshold', 0.85))
         self.battery_capacity_kwh: Optional[float] = None
 
-        Path('logs').mkdir(exist_ok=True)
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('logs/ess_optimizer.log'),
-                logging.StreamHandler()
-            ]
-        )
+        # Price cache file path - use /tmp in Lambda (ephemeral but works within invocation)
+        self._is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
+        if self._is_lambda:
+            self._price_cache_file = Path('/tmp/price_cache.json')
+        else:
+            self._price_cache_file = Path('logs/price_cache.json')
+            Path('logs').mkdir(exist_ok=True)
+
+        # Configure logging - Lambda uses CloudWatch via stdout, local uses file + stdout
+        if not logging.getLogger().handlers:
+            handlers = [logging.StreamHandler()]
+            if not self._is_lambda:
+                handlers.append(logging.FileHandler('logs/ess_optimizer.log'))
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(levelname)s - %(message)s',
+                handlers=handlers
+            )
         logging.info("ESS Optimizer initialized")
 
     async def get_battery_soc(self) -> Optional[float]:
@@ -132,10 +144,55 @@ class ESSOptimizer:
             logging.error(f"Failed to get battery SOC: {e}")
             return None
 
+    def _load_price_cache(self) -> Dict[str, Dict[str, float]]:
+        """Load price cache from disk"""
+        if not self._price_cache_file.exists():
+            return {}
+        try:
+            with open(self._price_cache_file, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logging.warning(f"Failed to load price cache: {e}")
+            return {}
+
+    def _save_price_cache(self, cache: Dict[str, Dict[str, float]]) -> None:
+        """Save price cache to disk"""
+        try:
+            with open(self._price_cache_file, 'w') as f:
+                json.dump(cache, f)
+        except IOError as e:
+            logging.warning(f"Failed to save price cache: {e}")
+
+    def _cleanup_price_cache(self, cache: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+        """Remove stale entries from price cache, keeping only today and tomorrow"""
+        today = datetime.now().date()
+        tomorrow = today + timedelta(days=1)
+        valid_dates = {str(today), str(tomorrow)}
+
+        stale_dates = [d for d in cache if d not in valid_dates]
+        for d in stale_dates:
+            del cache[d]
+            logging.debug(f"Removed stale price cache entry for {d}")
+
+        return cache
+
     async def get_prices_for_day(self, target_date: datetime) -> Optional[Dict[int, float]]:
-        """Get 15-minute prices for a specific day"""
+        """Get 15-minute prices for a specific day (cached for today/tomorrow)"""
         try:
             date_obj = target_date.date()
+            date_str = str(date_obj)
+
+            # Load and clean up cache
+            cache = self._load_price_cache()
+            cache = self._cleanup_price_cache(cache)
+
+            # Check cache
+            if date_str in cache:
+                logging.info(f"Using cached prices for {date_obj}")
+                # Convert string keys back to int for slot_prices
+                return {int(k): v for k, v in cache[date_str].items()}
+
+            # Fetch from API
             prices_list = await self.price_fetcher.fetch_prices_for_date(date_obj, hourly=False)
 
             if not prices_list or len(prices_list) != SLOTS_PER_DAY:
@@ -143,7 +200,18 @@ class ESSOptimizer:
                 return None
 
             slot_prices = {slot: price for slot, price in enumerate(prices_list)}
-            logging.info(f"Retrieved {SLOTS_PER_DAY} price slots for {date_obj}")
+
+            # Cache if it's today or tomorrow
+            today = datetime.now().date()
+            tomorrow = today + timedelta(days=1)
+            if date_obj in {today, tomorrow}:
+                # Store with string keys for JSON serialization
+                cache[date_str] = {str(k): v for k, v in slot_prices.items()}
+                self._save_price_cache(cache)
+                logging.info(f"Cached {SLOTS_PER_DAY} price slots for {date_obj}")
+            else:
+                logging.info(f"Retrieved {SLOTS_PER_DAY} price slots for {date_obj} (not cached - outside today/tomorrow)")
+
             return slot_prices
         except Exception as e:
             logging.error(f"Failed to get prices: {e}")
@@ -280,18 +348,28 @@ class ESSOptimizer:
         sorted_peaks = sorted(peaks, key=lambda p: p.start_slot)
 
         used_peaks = set()
+        used_discharge_slots = set()  # Track which slots are already used for discharge
         estimated_soc = current_soc
-        last_window_end_slot = 0
+        last_charge_end_slot = 0
+        last_discharge_start_slot = 0
 
         for valley in sorted_valleys:
             next_peak = None
             for peak in sorted_peaks:
                 if peak.start_slot >= valley.end_slot and id(peak) not in used_peaks:
-                    next_peak = peak
-                    break
+                    # Check if this peak overlaps with already used discharge slots
+                    peak_slots = set(range(peak.start_slot, peak.end_slot))
+                    if len(peak_slots & used_discharge_slots) < len(peak_slots) * 0.5:
+                        next_peak = peak
+                        break
 
             if next_peak is None:
-                next_peak = self._find_profitable_discharge_window(valley.avg_price, slot_prices, after_slot=valley.end_slot)
+                # Find discharge window that doesn't overlap with used slots
+                next_peak = self._find_profitable_discharge_window(
+                    valley.avg_price, slot_prices, 
+                    after_slot=valley.end_slot, 
+                    exclude_slots=used_discharge_slots
+                )
                 if next_peak:
                     logging.info(f"Found profitable window from prices: {next_peak}")
 
@@ -302,11 +380,31 @@ class ESSOptimizer:
             if spread <= 0:
                 continue
 
-            # Account for consumption between windows
-            gap_hours = (valley.start_slot - last_window_end_slot) / 4
-            if gap_hours > 0:
-                soc_drain = self._estimate_consumption_soc_drain(gap_hours)
-                estimated_soc = max(self.MIN_SOC, estimated_soc - soc_drain)
+            # Estimate SOC at the start of this charge window
+            # Key insight: If this charge starts BEFORE the previous discharge,
+            # the battery is still full from the previous charge
+            if valley.start_slot < last_discharge_start_slot and last_charge_end_slot > 0:
+                # This charge happens before previous discharge - battery still at 100%
+                estimated_soc = 100.0
+                # Only account for consumption since last charge ended
+                gap_hours = (valley.start_slot - last_charge_end_slot) / 4
+                if gap_hours > 0:
+                    soc_drain = self._estimate_consumption_soc_drain(gap_hours)
+                    estimated_soc = max(self.MIN_SOC, estimated_soc - soc_drain)
+                
+                # CRITICAL: If battery is still well-charged (>50%) and we haven't 
+                # discharged the previous cycle yet, skip this valley - no point
+                # charging an already-charged battery
+                if estimated_soc > 50:
+                    logging.info(f"Skipping valley {valley}: battery still at {estimated_soc:.0f}% "
+                                f"(previous discharge at {last_discharge_start_slot // 4:02d}:{(last_discharge_start_slot % 4) * 15:02d} hasn't happened)")
+                    continue
+            else:
+                # Normal case: account for discharge and consumption
+                gap_hours = (valley.start_slot - max(last_charge_end_slot, 0)) / 4
+                if gap_hours > 0:
+                    soc_drain = self._estimate_consumption_soc_drain(gap_hours)
+                    estimated_soc = max(self.MIN_SOC, estimated_soc - soc_drain)
 
             # Use full valley for overnight or depleted battery
             is_overnight = valley.start_slot < 28
@@ -317,31 +415,76 @@ class ESSOptimizer:
                 slots_needed = self.calculate_charging_slots_needed(estimated_soc, self.MAX_SOC)
                 optimal_charge_window = self._create_charge_window(valley, slot_prices, slots_needed)
 
-            # Extend discharge to cover all profitable hours
+            # Extend discharge, but don't overlap with already used discharge slots
             next_valley_start = SLOTS_PER_DAY
             for v in sorted_valleys:
                 if v.start_slot > next_peak.end_slot:
                     next_valley_start = v.start_slot
                     break
 
-            extended_discharge = self._extend_discharge_window(next_peak, valley.avg_price, slot_prices, max_end_slot=next_valley_start)
+            # Also limit extension to not overlap with used discharge windows
+            max_end = next_valley_start
+            if used_discharge_slots:
+                min_used = min(used_discharge_slots)
+                # If the peak is before existing discharge, cap extension at that point
+                if next_peak.start_slot < min_used:
+                    max_end = min(max_end, min_used)
+
+            extended_discharge = self._extend_discharge_window(
+                next_peak, valley.avg_price, slot_prices, 
+                max_end_slot=max_end,
+                exclude_slots=used_discharge_slots
+            )
+
+            # Skip if extended discharge overlaps too much with existing (>50%)
+            extended_slots = set(range(extended_discharge.start_slot, extended_discharge.end_slot))
+            overlap = len(extended_slots & used_discharge_slots)
+            if overlap > len(extended_slots) * 0.5:
+                logging.info(f"Skipping cycle: discharge {extended_discharge} overlaps {overlap} slots with existing")
+                continue
 
             cycles.append(ArbitrageCycle(optimal_charge_window, extended_discharge, spread))
             used_peaks.add(id(next_peak))
-            last_window_end_slot = extended_discharge.end_slot
+            
+            # Track used discharge slots
+            for slot in range(extended_discharge.start_slot, extended_discharge.end_slot):
+                used_discharge_slots.add(slot)
+            
+            last_charge_end_slot = optimal_charge_window.end_slot
+            last_discharge_start_slot = extended_discharge.start_slot
             estimated_soc = self.estimate_soc_after_discharge(100, extended_discharge.duration_hours)
 
             logging.info(f"Cycle {len(cycles)}: {cycles[-1]}")
 
         return cycles
 
-    def _find_profitable_discharge_window(self, charge_price: float, slot_prices: Dict[int, float], after_slot: int = 0) -> Optional[PriceWindow]:
-        """Find profitable discharge window from prices when no peaks detected"""
+    def _find_profitable_discharge_window(
+            self, charge_price: float, slot_prices: Dict[int, float], 
+            after_slot: int = 0, exclude_slots: Optional[set] = None
+    ) -> Optional[PriceWindow]:
+        """Find profitable discharge window from prices when no peaks detected.
+        
+        Args:
+            exclude_slots: Set of slots already used by other discharge windows
+        """
         profit_threshold = charge_price * self.price_multiplier
         best_window, best_avg = None, 0
         in_window, window_start = False, 0
+        exclude_slots = exclude_slots or set()
 
         for slot in range(after_slot, SLOTS_PER_DAY + 1):
+            # Skip slots already used by other discharge windows
+            if slot in exclude_slots:
+                if in_window and slot - window_start >= self.MIN_WINDOW_SLOTS:
+                    window_prices = [slot_prices[s] for s in range(window_start, slot) if s not in exclude_slots]
+                    if window_prices:
+                        avg_price = sum(window_prices) / len(window_prices)
+                        if avg_price > best_avg:
+                            best_avg = avg_price
+                            best_window = PriceWindow(window_start, slot, avg_price, 'peak')
+                in_window = False
+                continue
+                
             is_profitable = slot < SLOTS_PER_DAY and slot_prices.get(slot, 0) >= profit_threshold
 
             if is_profitable and not in_window:
@@ -360,7 +503,8 @@ class ESSOptimizer:
 
     def _extend_discharge_window(
             self, peak: PriceWindow, charge_price: float,
-            slot_prices: Optional[Dict[int, float]], max_end_slot: int = SLOTS_PER_DAY
+            slot_prices: Optional[Dict[int, float]], max_end_slot: int = SLOTS_PER_DAY,
+            exclude_slots: Optional[set] = None
     ) -> PriceWindow:
         """Extend discharge window to include profitable hours around peak.
         
@@ -368,10 +512,14 @@ class ESSOptimizer:
         - Backward: Only extend into slots with prices close to peak average
           (controlled by DISCHARGE_EXTENSION_THRESHOLD, default 85%)
         - Forward: Extend into all profitable slots (price > charge_price * multiplier)
+        
+        Args:
+            exclude_slots: Set of slots already used by other discharge windows
         """
         if slot_prices is None:
             return peak
 
+        exclude_slots = exclude_slots or set()
         profit_threshold = charge_price * self.price_multiplier
         # For backward extension, require price to be at least X% of peak average
         # This prevents extending into mediocre slots before the peak
@@ -379,6 +527,9 @@ class ESSOptimizer:
 
         extended_start = peak.start_slot
         for slot in range(peak.start_slot - 1, -1, -1):
+            # Stop if slot is already used by another discharge
+            if slot in exclude_slots:
+                break
             slot_price = slot_prices.get(slot, 0)
             # Backward extension requires BOTH: profitable AND close to peak value
             if slot_price >= profit_threshold and slot_price >= backward_threshold:
@@ -386,9 +537,11 @@ class ESSOptimizer:
             else:
                 break
 
-        # Forward extension: just needs to be profitable
+        # Forward extension: just needs to be profitable, and not excluded
         extended_end = peak.end_slot
         for slot in range(peak.end_slot, min(max_end_slot, SLOTS_PER_DAY)):
+            if slot in exclude_slots:
+                break
             if slot_prices.get(slot, 0) >= profit_threshold:
                 extended_end = slot + 1
             else:
@@ -553,9 +706,9 @@ class ESSOptimizer:
 
     async def optimize_for_day(self, target_date: datetime) -> bool:
         """Main optimization for a given day"""
-        logging.info(f"\n{'=' * 60}")
+        logging.info(f"{'=' * 50}")
         logging.info(f"🔋 Dynamic optimization for {target_date.date()}")
-        logging.info(f"{'=' * 60}")
+        logging.info(f"{'=' * 50}")
 
         # Get current battery SOC
         current_soc = await self.get_battery_soc()
@@ -665,7 +818,7 @@ class ESSOptimizer:
                     last_optimization_hour = current_hour
 
                 current_soc = await self.get_battery_soc()
-                if current_soc is not None and current_soc < 20:
+                if current_soc is not None and current_soc < 80:
                     logging.warning(f"⚠️ Battery low ({current_soc}%)")
                     await self.optimize_for_day(now)
 

@@ -1,0 +1,41 @@
+# Virtual environment
+lib/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Logs and cache (Lambda uses CloudWatch)
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Tests (not needed in Lambda)
+test_*.py
+pytest.ini
+
+# Local config (use env vars in Lambda)
+.env
+
+# Lock files (dependencies installed from pyproject.toml)
+uv.lock
+poetry.lock
+
+# Documentation
+README.md
+*.md
+

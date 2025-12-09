@@ -18,6 +18,7 @@ def optimizer():
             patch('ESS.alphaess') as mock_client, \
             patch('ESS.PriceFetcher') as mock_fetcher:
         # Mock config with both __getitem__ and get()
+        # Using realistic values matching real config.yaml
         config_values = {
             'app_id': 'test_id',
             'app_secret': 'test_secret',
@@ -26,6 +27,8 @@ def optimizer():
             'price_multiplier': 1.2,
             'avg_overnight_load_kw': 0.5,
             'avg_day_load_kw': 1.8,
+            'smoothing_window': 2,  # Matches real config for Dec 8th detection
+            'min_window_slots': 2,  # Matches real config
         }
         mock_config_instance = MagicMock()
         mock_config_instance.__getitem__ = lambda self, key: config_values[key]
@@ -956,6 +959,212 @@ class TestArbitrageCycleIntegration:
             assert cycle1_discharge_start < 50, f"Cycle 1 should discharge in morning, got slot {cycle1_discharge_start}"
             # Cycle 2 should charge after cycle 1 discharges
             assert cycle2_charge_start > plan.cycles[0].charge_window.end_slot, "Cycles should be sequential"
+
+
+# =============================================================================
+# Real Data Tests - December 8th, 2025
+# =============================================================================
+# Test case for strange price pattern with overlapping discharge windows
+# Log output showed:
+#   - 3 valleys: 00:00-04:45 @ 69, 05:15-06:30 @ 73, 23:15-24:00 @ 78  
+#   - 2 peaks: 16:15-20:30 @ 136, 20:45-21:30 @ 126
+#   - Cycle 1: Charge 00:00-03:30 → Discharge 15:45-23:15
+#   - Cycle 2: Charge 05:15-06:30 → Discharge 14:15-23:15
+# Problems:
+#   1. Discharge windows overlap by 90% (both end at 23:15)
+#   2. Two charge windows (4.75h total) when only 3h needed
+
+# Real price data from OTE for December 8th, 2025 (96 slots)
+# This is the actual data that produced the strange behavior:
+#   - mean=105, valley_threshold=87, peak_threshold=125
+#   - Very volatile with prices ranging from 45 to 149
+#   - Multiple valleys and peaks throughout the day
+PRICES_2025_12_08 = [
+    60.00, 59.98, 62.40, 98.24, 57.48, 56.67, 80.61, 108.32,  # 00:00-02:00
+    52.09, 51.78, 50.61, 44.96, 79.08, 75.00, 75.00, 74.00,  # 02:00-04:00
+    74.50, 70.00, 74.81, 106.29, 129.03, 58.00, 65.11, 81.51,  # 04:00-06:00
+    69.08, 88.84, 100.00, 139.99, 120.53, 111.40, 115.85, 115.48,  # 06:00-08:00
+    112.71, 116.37, 115.25, 112.86, 116.12, 114.39, 107.33, 98.90,  # 08:00-10:00
+    122.00, 106.04, 98.21, 94.80, 107.12, 104.74, 103.53, 104.61,  # 10:00-12:00
+    104.06, 103.54, 105.85, 113.31, 98.84, 104.43, 107.18, 105.96,  # 12:00-14:00
+    92.69, 110.09, 120.92, 117.80, 107.74, 112.46, 114.95, 121.00,  # 14:00-16:00
+    115.76, 138.42, 145.57, 140.45, 149.05, 130.45, 128.59, 129.38,  # 16:00-18:00
+    134.37, 134.63, 131.12, 135.21, 138.86, 140.52, 136.71, 133.29,  # 18:00-20:00
+    137.64, 130.52, 127.99, 108.00, 141.12, 129.13, 133.57, 96.18,  # 20:00-22:00
+    126.19, 126.55, 114.59, 90.82, 94.02, 82.26, 78.96, 73.72,  # 22:00-24:00
+]
+
+
+class TestRealData20251208:
+    """Tests for December 8th 2025 price pattern - strange edge case"""
+
+    @pytest.fixture
+    def prices_dict(self):
+        """Convert price list to slot dict"""
+        return {slot: price for slot, price in enumerate(PRICES_2025_12_08)}
+
+    def test_data_integrity(self):
+        """Verify the generated data has correct structure"""
+        assert len(PRICES_2025_12_08) == 96, "Should have 96 15-minute slots"
+        assert all(isinstance(p, (int, float)) for p in PRICES_2025_12_08)
+        assert min(PRICES_2025_12_08) > 0, "All prices should be positive"
+        
+        daily_mean = sum(PRICES_2025_12_08) / len(PRICES_2025_12_08)
+        print(f"Dec 8th prices: mean={daily_mean:.0f}, min={min(PRICES_2025_12_08):.0f}, max={max(PRICES_2025_12_08):.0f}")
+
+    def test_detects_valleys_and_peaks(self, optimizer, prices_dict):
+        """Verify detection finds expected valleys and peaks"""
+        valleys, peaks = optimizer.detect_valleys_and_peaks(prices_dict)
+        
+        print(f"\nDetected {len(valleys)} valleys:")
+        for v in valleys:
+            print(f"  {v}")
+        print(f"Detected {len(peaks)} peaks:")
+        for p in peaks:
+            print(f"  {p}")
+        
+        # Should find at least 1 valley (early morning)
+        assert len(valleys) >= 1, f"Should have at least 1 valley, got {len(valleys)}"
+        # Should find at least 1 peak (evening)
+        assert len(peaks) >= 1, f"Should have at least 1 peak, got {len(peaks)}"
+        
+        # Evening peak should be in the 16:00-22:00 range
+        evening_peaks = [p for p in peaks if p.start_slot >= 64]  # After 16:00
+        assert len(evening_peaks) >= 1, "Should have at least one evening peak"
+
+    def test_discharge_windows_do_not_overlap_excessively(self, optimizer, prices_dict):
+        """
+        REGRESSION TEST: Discharge windows should not overlap by more than 50%
+        
+        The bug: When two peaks are close together (e.g., 16:15-20:30 and 20:45-21:30),
+        both get extended to cover essentially the same period, resulting in:
+        - P1: 15:45-23:15
+        - P2: 14:15-23:15
+        This is 90% overlap which wastes the second discharge slot.
+        """
+        plan = optimizer.analyze_day(prices_dict, current_soc=20.0)
+        
+        print(f"\nCycles found: {len(plan.cycles)}")
+        for i, cycle in enumerate(plan.cycles):
+            print(f"  Cycle {i+1}: {cycle}")
+        
+        if len(plan.cycles) >= 2:
+            d1 = plan.cycles[0].discharge_window
+            d2 = plan.cycles[1].discharge_window
+            
+            # Calculate overlap
+            overlap_start = max(d1.start_slot, d2.start_slot)
+            overlap_end = min(d1.end_slot, d2.end_slot)
+            overlap_slots = max(0, overlap_end - overlap_start)
+            
+            d1_duration = d1.end_slot - d1.start_slot
+            d2_duration = d2.end_slot - d2.start_slot
+            smaller_duration = min(d1_duration, d2_duration)
+            
+            if smaller_duration > 0:
+                overlap_ratio = overlap_slots / smaller_duration
+                print(f"\nDischarge overlap: {overlap_slots} slots ({overlap_ratio:.0%})")
+                print(f"  D1: {d1.start_time}-{d1.end_time} ({d1_duration} slots)")
+                print(f"  D2: {d2.start_time}-{d2.end_time} ({d2_duration} slots)")
+                
+                assert overlap_ratio < 0.5, \
+                    f"Discharge windows overlap by {overlap_ratio:.0%}, should be < 50%"
+
+    def test_charging_hours_reasonable(self, optimizer, prices_dict):
+        """
+        REGRESSION TEST: Total charging hours should not exceed what's needed
+        
+        The bug: Two full valley charges scheduled (00:00-03:30 + 05:15-06:30 = 4.75h)
+        when only 3 hours is needed to charge from 0% to 100%.
+        """
+        plan = optimizer.analyze_day(prices_dict, current_soc=20.0)
+        
+        total_charge_hours = sum(c.charge_window.duration_hours for c in plan.cycles)
+        
+        print(f"\nTotal charging hours: {total_charge_hours:.2f}h")
+        print(f"Charge to full: {optimizer.charge_hours}h")
+        for i, cycle in enumerate(plan.cycles):
+            print(f"  Cycle {i+1} charge: {cycle.charge_window.start_time}-{cycle.charge_window.end_time} "
+                  f"({cycle.charge_window.duration_hours:.2f}h)")
+        
+        # Total charging should be at most 150% of charge_to_full 
+        # (some buffer for optimal slot selection, but not double)
+        max_reasonable = optimizer.charge_hours * 1.5
+        assert total_charge_hours <= max_reasonable, \
+            f"Total charge time {total_charge_hours:.2f}h exceeds reasonable max {max_reasonable:.2f}h"
+
+    def test_sequential_cycles_have_separate_peaks(self, optimizer, prices_dict):
+        """
+        Test that if we have 2 cycles, they should target different peak periods,
+        not the same evening peak split into two overlapping windows.
+        """
+        plan = optimizer.analyze_day(prices_dict, current_soc=20.0)
+        
+        if len(plan.cycles) >= 2:
+            # The discharge windows should be either:
+            # 1. Non-overlapping (different time periods)
+            # 2. Or we should only have 1 cycle (merged peaks)
+            
+            d1_end = plan.cycles[0].discharge_window.end_slot
+            d2_start = plan.cycles[1].discharge_window.start_slot
+            
+            # Either d2 starts after d1 ends, or they're truly separate periods
+            # (morning vs evening, not both evening)
+            is_sequential = d2_start >= d1_end
+            
+            # Check if both are in the same "evening" period (slots 60-96 = 15:00-24:00)
+            d1_mid = (plan.cycles[0].discharge_window.start_slot + plan.cycles[0].discharge_window.end_slot) // 2
+            d2_mid = (plan.cycles[1].discharge_window.start_slot + plan.cycles[1].discharge_window.end_slot) // 2
+            both_evening = d1_mid >= 60 and d2_mid >= 60
+            
+            print(f"\nD1 midpoint: slot {d1_mid} ({d1_mid // 4:02d}:{(d1_mid % 4) * 15:02d})")
+            print(f"D2 midpoint: slot {d2_mid} ({d2_mid // 4:02d}:{(d2_mid % 4) * 15:02d})")
+            print(f"Sequential: {is_sequential}, Both evening: {both_evening}")
+            
+            if both_evening:
+                assert is_sequential, \
+                    "Two cycles targeting same evening period should be sequential, not overlapping"
+
+
+class TestDischargeWindowOverlapPrevention:
+    """Tests specifically for preventing discharge window overlap"""
+
+    def test_adjacent_peaks_should_merge(self, optimizer):
+        """Adjacent peaks separated by small gap should be treated as one"""
+        prices = {i: 100 for i in range(96)}
+        # Peak 1: 16:00-18:00
+        for i in range(64, 72):
+            prices[i] = 200
+        # Small gap: 18:00-18:15 (just 1 slot)
+        prices[72] = 110
+        # Peak 2: 18:15-19:00
+        for i in range(73, 76):
+            prices[i] = 190
+        # Valley at night
+        for i in range(0, 20):
+            prices[i] = 60
+        
+        plan = optimizer.analyze_day(prices, current_soc=20.0)
+        
+        print(f"\nAdjacent peaks test:")
+        print(f"Cycles: {len(plan.cycles)}")
+        for c in plan.cycles:
+            print(f"  {c}")
+        
+        # With adjacent peaks, we should either:
+        # 1. Have only 1 cycle that covers both peaks
+        # 2. Or have 2 cycles with non-overlapping discharge windows
+        if len(plan.cycles) >= 2:
+            d1 = plan.cycles[0].discharge_window
+            d2 = plan.cycles[1].discharge_window
+            
+            # They should not significantly overlap
+            overlap_start = max(d1.start_slot, d2.start_slot)
+            overlap_end = min(d1.end_slot, d2.end_slot)
+            overlap = max(0, overlap_end - overlap_start)
+            
+            print(f"Overlap: {overlap} slots")
+            assert overlap < 4, f"Adjacent peaks caused {overlap} slots of overlap"
 
 
 if __name__ == "__main__":

@@ -25,6 +25,9 @@ htmlcov/
 logs/
 *.log
 
+# Environment files with secrets
+.env
+
 # Data
 data/
 

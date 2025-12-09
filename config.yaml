@@ -9,4 +9,4 @@ max_soc: 100                # Maximum SOC %
 # Technical parameters
 min_window_slots: 2         # Minimum window size in 15-min slots (4 = 1 hour)
 smoothing_window: 2         # Slots to average for price smoothing (4 = 1 hour)
-discharge_extension_threshold: 0.85  # Only extend discharge backward if price >= this % of peak avg
+discharge_extension_threshold: 0.75  # Only extend discharge backward if price >= this % of peak avg
