@@ -38,6 +38,9 @@ class PriceWindow:
 
     @property
     def end_time(self) -> str:
+        # Handle end of day: slot 96 = 24:00 -> 00:00 (midnight)
+        if self.end_slot >= SLOTS_PER_DAY:
+            return "00:00"
         return f"{self.end_slot // 4:02d}:{(self.end_slot % 4) * 15:02d}"
 
     @property
@@ -456,6 +459,30 @@ class ESSOptimizer:
 
             logging.info(f"Cycle {len(cycles)}: {cycles[-1]}")
 
+        # Look for additional profitable discharge windows if we have < 2 cycles
+        # This catches evening peaks when morning was already found
+        if len(cycles) < 2 and cycles:
+            last_cycle = cycles[-1]
+            search_start = last_cycle.discharge_window.end_slot + self.MIN_WINDOW_SLOTS
+            
+            additional = self._find_profitable_discharge_window(
+                last_cycle.charge_window.avg_price, slot_prices,
+                after_slot=search_start, exclude_slots=used_discharge_slots
+            )
+            
+            if additional:
+                # Extend evening windows to EOD (no point saving for tomorrow)
+                is_evening = additional.start_slot >= 56  # After 14:00
+                additional = self._extend_discharge_window(
+                    additional, last_cycle.charge_window.avg_price, slot_prices,
+                    max_end_slot=SLOTS_PER_DAY, aggressive_eod=is_evening
+                )
+                
+                spread = additional.avg_price - last_cycle.charge_window.avg_price
+                if spread > 0:
+                    cycles.append(ArbitrageCycle(last_cycle.charge_window, additional, spread))
+                    logging.info(f"Found additional discharge: {cycles[-1]}")
+
         return cycles
 
     def _find_profitable_discharge_window(
@@ -504,16 +531,13 @@ class ESSOptimizer:
     def _extend_discharge_window(
             self, peak: PriceWindow, charge_price: float,
             slot_prices: Optional[Dict[int, float]], max_end_slot: int = SLOTS_PER_DAY,
-            exclude_slots: Optional[set] = None
+            exclude_slots: Optional[set] = None, aggressive_eod: bool = False
     ) -> PriceWindow:
         """Extend discharge window to include profitable hours around peak.
         
-        Uses different thresholds for backward vs forward extension:
-        - Backward: Only extend into slots with prices close to peak average
-          (controlled by DISCHARGE_EXTENSION_THRESHOLD, default 85%)
-        - Forward: Extend into all profitable slots (price > charge_price * multiplier)
-        
         Args:
+            aggressive_eod: If True, use lower threshold for evening slots (after 20:00)
+                           to extend towards EOD even with marginally profitable prices
             exclude_slots: Set of slots already used by other discharge windows
         """
         if slot_prices is None:
@@ -521,28 +545,28 @@ class ESSOptimizer:
 
         exclude_slots = exclude_slots or set()
         profit_threshold = charge_price * self.price_multiplier
-        # For backward extension, require price to be at least X% of peak average
-        # This prevents extending into mediocre slots before the peak
+        # Lower threshold for late evening - even marginal profit beats wasting charge
+        eod_threshold = charge_price * 1.05 if aggressive_eod else profit_threshold
         backward_threshold = peak.avg_price * self.DISCHARGE_EXTENSION_THRESHOLD
 
         extended_start = peak.start_slot
         for slot in range(peak.start_slot - 1, -1, -1):
-            # Stop if slot is already used by another discharge
             if slot in exclude_slots:
                 break
             slot_price = slot_prices.get(slot, 0)
-            # Backward extension requires BOTH: profitable AND close to peak value
             if slot_price >= profit_threshold and slot_price >= backward_threshold:
                 extended_start = slot
             else:
                 break
 
-        # Forward extension: just needs to be profitable, and not excluded
+        # Forward extension
         extended_end = peak.end_slot
         for slot in range(peak.end_slot, min(max_end_slot, SLOTS_PER_DAY)):
             if slot in exclude_slots:
                 break
-            if slot_prices.get(slot, 0) >= profit_threshold:
+            # After 20:00 (slot 80), use lower threshold if aggressive_eod
+            threshold = eod_threshold if slot >= 80 else profit_threshold
+            if slot_prices.get(slot, 0) >= threshold:
                 extended_end = slot + 1
             else:
                 break
