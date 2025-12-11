@@ -36,7 +36,6 @@ Automatically charge your AlphaESS battery when electricity is cheap and dischar
 | 🔋 **Battery-Aware** | Sizes windows based on actual SOC and capacity |
 | 📊 **15-min Granularity** | Uses OTE's 96 daily price slots for precision |
 | ☁️ **Serverless Ready** | Deploy to AWS Lambda or run locally |
-| 🕐 **Reactive Mode** | Hourly re-optimization adapts to changing conditions |
 
 ## 🚀 Quick Start
 
@@ -85,11 +84,11 @@ max_soc: 100             # Charge target %
 ### Run
 
 ```bash
-# Continuous monitoring (recommended)
-uv run ESS.py
+# Default: Single optimization for today (run at midnight)
+uv run optimizer.py
 
-# Single optimization for tomorrow (cron-friendly)
-uv run ESS.py --once
+# Dry run for a specific day (no API changes)
+uv run optimizer.py --date 15
 ```
 
 ---
@@ -121,23 +120,19 @@ The script will:
 | **Architecture** | arm64 (Graviton) |
 | **Timeout** | 30 seconds |
 | **Memory** | 256 MB |
-| **Trigger** | EventBridge @ 17:00 UTC daily |
+| **Trigger** | EventBridge @ 00:00 UTC daily |
 
-### Invocation Modes
+### Lambda Execution
 
-```json
-{"mode": "tomorrow"}   // Default - optimize for next day
-{"mode": "today"}      // Re-optimize current day  
-{"mode": "reactive"}   // Hourly check based on current SOC
-```
+Lambda runs once at 00:00 daily and optimizes for the current day. No configuration needed - just schedule it via EventBridge.
 
 ### Schedule with EventBridge
 
 ```bash
-# Daily at 17:00 UTC (18:00 CET)
+# Daily at 00:00 UTC (01:01 CET)
 aws events put-rule \
   --name "ess-daily-optimization" \
-  --schedule-expression "cron(0 17 * * ? *)"
+  --schedule-expression "cron(1 0 * * ? *)"
 ```
 
 ---
@@ -211,7 +206,12 @@ aws events put-rule \
 ## 📁 Project Structure
 
 ```
-├── ESS.py              # Main optimizer logic
+├── optimizer.py        # Main optimizer orchestration
+├── models.py           # Data models (PriceWindow, ArbitrageCycle, etc.)
+├── price_analyzer.py   # Price analysis and valley/peak detection
+├── battery_manager.py  # Battery state calculations
+├── ess_client.py       # AlphaESS API client
+└── price_cache.py      # Price caching logic
 ├── config.py           # Configuration loader
 ├── config.yaml         # Optimization settings
 ├── lambda_handler.py   # AWS Lambda entry point
@@ -236,8 +236,8 @@ uv run pytest test_ess.py -v
 ### Cron (Linux/macOS)
 
 ```cron
-# Run daily at 18:00
-0 18 * * * cd /path/to/AlphaESS-charging-optimizer && uv run ESS.py --once
+# Run daily at 00:00 (midnight + 1 minute)
+1 0 * * * cd /path/to/AlphaESS-charging-optimizer && uv run optimizer.py
 ```
 
 ### AWS Lambda + EventBridge
@@ -250,7 +250,7 @@ See [Lambda Deployment](#️-aws-lambda-deployment) section above.
 
 - **Target market:** Czech OTE day-ahead prices (15-min granularity)
 - **API limitation:** Max 2 charge + 2 discharge windows per day
-- **Prices published:** ~14:00 for next day → run optimization at 18:00
+- **Schedule:** Run at 00:00 daily to optimize for that day (prices are published the day before)
 
 ---
 

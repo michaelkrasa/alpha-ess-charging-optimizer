@@ -1,5 +1,5 @@
 """
-Tests for ESS Optimizer - Dynamic Reactive Strategy
+Tests for ESS Optimizer
 Run with: uv run pytest test_ess.py -v
 """
 
@@ -8,15 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ESS import ESSOptimizer, PriceWindow
+from models import PriceWindow
+from optimizer import ESSOptimizer
 
 
 @pytest.fixture
 def optimizer():
     """Create an optimizer instance with mocked config and battery capacity"""
-    with patch('ESS.Config') as mock_config, \
-            patch('ESS.alphaess') as mock_client, \
-            patch('ESS.PriceFetcher') as mock_fetcher:
+    with patch('optimizer.Config') as mock_config, \
+            patch('ess_client.alphaess') as mock_client, \
+            patch('optimizer.PriceFetcher') as mock_fetcher:
         # Mock config with both __getitem__ and get()
         # Using realistic values matching real config.yaml
         config_values = {
@@ -126,7 +127,8 @@ class TestAPIInteractions:
     async def test_get_battery_soc_success(self, optimizer):
         """Test successful battery SOC retrieval from LastPower"""
         mock_data = {'LastPower': {'soc': 45.5}, 'cobat': 15.5, 'usCapacity': 100}
-        optimizer.client.getdata = AsyncMock(return_value=mock_data)
+        optimizer.ess_client.client.getdata = AsyncMock(return_value=mock_data)
+        optimizer.ess_client.get_battery_capacity = AsyncMock(return_value=15.5)
 
         soc = await optimizer.get_battery_soc()
         assert soc == 45.5
@@ -134,14 +136,15 @@ class TestAPIInteractions:
     async def test_get_battery_soc_list_response(self, optimizer):
         """Test battery SOC retrieval when API returns list"""
         mock_data = [{'LastPower': {'soc': 67.8}, 'cobat': 15.5, 'usCapacity': 100}]
-        optimizer.client.getdata = AsyncMock(return_value=mock_data)
+        optimizer.ess_client.client.getdata = AsyncMock(return_value=mock_data)
+        optimizer.ess_client.get_battery_capacity = AsyncMock(return_value=15.5)
 
         soc = await optimizer.get_battery_soc()
         assert soc == 67.8
 
     async def test_get_battery_soc_failure(self, optimizer):
         """Test battery SOC retrieval when API fails"""
-        optimizer.client.getdata = AsyncMock(side_effect=Exception("API Error"))
+        optimizer.ess_client.client.getdata = AsyncMock(side_effect=Exception("API Error"))
 
         soc = await optimizer.get_battery_soc()
         assert soc is None
@@ -185,7 +188,7 @@ class TestAPIInteractions:
 
     async def test_set_charging_schedule_enable(self, optimizer):
         """Test enabling charging schedule"""
-        optimizer.client.updateChargeConfigInfo = AsyncMock(return_value={'success': True})
+        optimizer.ess_client.client.updateChargeConfigInfo = AsyncMock(return_value={'success': True})
 
         result = await optimizer.set_charging_schedule(
             enable=True,
@@ -193,25 +196,25 @@ class TestAPIInteractions:
         )
 
         assert result is True
-        optimizer.client.updateChargeConfigInfo.assert_called_once()
-        call_args = optimizer.client.updateChargeConfigInfo.call_args
+        optimizer.ess_client.client.updateChargeConfigInfo.assert_called_once()
+        call_args = optimizer.ess_client.client.updateChargeConfigInfo.call_args
         assert call_args.kwargs['gridCharge'] == 1
         assert call_args.kwargs['batHighCap'] == 100
 
     async def test_set_charging_schedule_disable(self, optimizer):
         """Test disabling charging schedule"""
-        optimizer.client.updateChargeConfigInfo = AsyncMock(return_value={'success': True})
+        optimizer.ess_client.client.updateChargeConfigInfo = AsyncMock(return_value={'success': True})
 
         result = await optimizer.set_charging_schedule(enable=False)
 
         assert result is True
-        optimizer.client.updateChargeConfigInfo.assert_called_once()
-        call_args = optimizer.client.updateChargeConfigInfo.call_args
+        optimizer.ess_client.client.updateChargeConfigInfo.assert_called_once()
+        call_args = optimizer.ess_client.client.updateChargeConfigInfo.call_args
         assert call_args.kwargs['gridCharge'] == 0
 
     async def test_set_discharge_schedule_enable(self, optimizer):
         """Test enabling discharge schedule"""
-        optimizer.client.updateDisChargeConfigInfo = AsyncMock(return_value={'success': True})
+        optimizer.ess_client.client.updateDisChargeConfigInfo = AsyncMock(return_value={'success': True})
 
         result = await optimizer.set_discharge_schedule(
             enable=True,
@@ -219,8 +222,8 @@ class TestAPIInteractions:
         )
 
         assert result is True
-        optimizer.client.updateDisChargeConfigInfo.assert_called_once()
-        call_args = optimizer.client.updateDisChargeConfigInfo.call_args
+        optimizer.ess_client.client.updateDisChargeConfigInfo.assert_called_once()
+        call_args = optimizer.ess_client.client.updateDisChargeConfigInfo.call_args
         assert call_args.kwargs['ctrDis'] == 1
         assert call_args.kwargs['batUseCap'] == 10
 
@@ -247,15 +250,15 @@ class TestOptimizationFlow:
         optimizer.get_prices_for_day = AsyncMock(return_value=mock_prices)
 
         # Mock API calls
-        optimizer.set_charging_schedule = AsyncMock(return_value=True)
-        optimizer.set_discharge_schedule = AsyncMock(return_value=True)
+        optimizer.ess_client.set_charging_schedule = AsyncMock(return_value=True)
+        optimizer.ess_client.set_discharge_schedule = AsyncMock(return_value=True)
 
         target_date = datetime(2025, 12, 2)
         result = await optimizer.optimize_for_day(target_date)
 
         assert result is True
-        optimizer.set_charging_schedule.assert_called()
-        optimizer.set_discharge_schedule.assert_called()
+        optimizer.ess_client.set_charging_schedule.assert_called()
+        optimizer.ess_client.set_discharge_schedule.assert_called()
 
     async def test_optimize_for_day_skip_charging_expensive(self, optimizer):
         """Test optimization that skips charging due to high prices"""
@@ -267,8 +270,8 @@ class TestOptimizationFlow:
         optimizer.get_prices_for_day = AsyncMock(return_value=mock_prices)
 
         # Mock API calls
-        optimizer.set_charging_schedule = AsyncMock(return_value=True)
-        optimizer.set_discharge_schedule = AsyncMock(return_value=True)
+        optimizer.ess_client.set_charging_schedule = AsyncMock(return_value=True)
+        optimizer.ess_client.set_discharge_schedule = AsyncMock(return_value=True)
 
         target_date = datetime(2025, 12, 2)
         result = await optimizer.optimize_for_day(target_date)
@@ -276,7 +279,7 @@ class TestOptimizationFlow:
         assert result is True
         # With no price spread, no arbitrage cycles should be found
         # Charging should be disabled (first arg = False)
-        call_args = optimizer.set_charging_schedule.call_args
+        call_args = optimizer.ess_client.set_charging_schedule.call_args
         enable_arg = call_args[0][0]
         assert enable_arg is False, f"Should disable charging when no spread, got {enable_arg}"
 
@@ -600,38 +603,6 @@ class TestDynamicDetectionEdgeCases:
 
 class TestDayAheadComparison:
     """Test day-ahead price comparison logic"""
-
-    def test_tomorrow_cheaper_recommendation(self, optimizer):
-        """Test recommendation when tomorrow is significantly cheaper"""
-        # Today: has valleys but they're not super cheap
-        today = {i: 150 for i in range(96)}
-        for i in range(8, 20):
-            today[i] = 120  # Valley at 120
-
-        # Tomorrow: much cheaper valleys
-        tomorrow = {i: 150 for i in range(96)}
-        for i in range(8, 20):
-            tomorrow[i] = 80  # Valley at 80
-
-        result = optimizer.compare_with_tomorrow(today, tomorrow)
-
-        assert result['tomorrow_cheaper'] is True
-        assert result['recommendation'] == 'wait'
-
-    def test_tomorrow_similar_recommendation(self, optimizer):
-        """Test recommendation when tomorrow is similar"""
-        today = {i: 150 for i in range(96)}
-        for i in range(8, 20):
-            today[i] = 100
-
-        tomorrow = {i: 150 for i in range(96)}
-        for i in range(8, 20):
-            tomorrow[i] = 98  # Very similar
-
-        result = optimizer.compare_with_tomorrow(today, tomorrow)
-
-        assert result['tomorrow_cheaper'] is False
-        assert result['recommendation'] == 'charge_now'
 
 
 class TestPriceWindowDataclass:
@@ -1008,26 +979,26 @@ class TestRealData20251208:
         assert len(PRICES_2025_12_08) == 96, "Should have 96 15-minute slots"
         assert all(isinstance(p, (int, float)) for p in PRICES_2025_12_08)
         assert min(PRICES_2025_12_08) > 0, "All prices should be positive"
-        
+
         daily_mean = sum(PRICES_2025_12_08) / len(PRICES_2025_12_08)
         print(f"Dec 8th prices: mean={daily_mean:.0f}, min={min(PRICES_2025_12_08):.0f}, max={max(PRICES_2025_12_08):.0f}")
 
     def test_detects_valleys_and_peaks(self, optimizer, prices_dict):
         """Verify detection finds expected valleys and peaks"""
         valleys, peaks = optimizer.detect_valleys_and_peaks(prices_dict)
-        
+
         print(f"\nDetected {len(valleys)} valleys:")
         for v in valleys:
             print(f"  {v}")
         print(f"Detected {len(peaks)} peaks:")
         for p in peaks:
             print(f"  {p}")
-        
+
         # Should find at least 1 valley (early morning)
         assert len(valleys) >= 1, f"Should have at least 1 valley, got {len(valleys)}"
         # Should find at least 1 peak (evening)
         assert len(peaks) >= 1, f"Should have at least 1 peak, got {len(peaks)}"
-        
+
         # Evening peak should be in the 16:00-22:00 range
         evening_peaks = [p for p in peaks if p.start_slot >= 64]  # After 16:00
         assert len(evening_peaks) >= 1, "Should have at least one evening peak"
@@ -1043,30 +1014,30 @@ class TestRealData20251208:
         This is 90% overlap which wastes the second discharge slot.
         """
         plan = optimizer.analyze_day(prices_dict, current_soc=20.0)
-        
+
         print(f"\nCycles found: {len(plan.cycles)}")
         for i, cycle in enumerate(plan.cycles):
-            print(f"  Cycle {i+1}: {cycle}")
-        
+            print(f"  Cycle {i + 1}: {cycle}")
+
         if len(plan.cycles) >= 2:
             d1 = plan.cycles[0].discharge_window
             d2 = plan.cycles[1].discharge_window
-            
+
             # Calculate overlap
             overlap_start = max(d1.start_slot, d2.start_slot)
             overlap_end = min(d1.end_slot, d2.end_slot)
             overlap_slots = max(0, overlap_end - overlap_start)
-            
+
             d1_duration = d1.end_slot - d1.start_slot
             d2_duration = d2.end_slot - d2.start_slot
             smaller_duration = min(d1_duration, d2_duration)
-            
+
             if smaller_duration > 0:
                 overlap_ratio = overlap_slots / smaller_duration
                 print(f"\nDischarge overlap: {overlap_slots} slots ({overlap_ratio:.0%})")
                 print(f"  D1: {d1.start_time}-{d1.end_time} ({d1_duration} slots)")
                 print(f"  D2: {d2.start_time}-{d2.end_time} ({d2_duration} slots)")
-                
+
                 assert overlap_ratio < 0.5, \
                     f"Discharge windows overlap by {overlap_ratio:.0%}, should be < 50%"
 
@@ -1078,15 +1049,15 @@ class TestRealData20251208:
         when only 3 hours is needed to charge from 0% to 100%.
         """
         plan = optimizer.analyze_day(prices_dict, current_soc=20.0)
-        
+
         total_charge_hours = sum(c.charge_window.duration_hours for c in plan.cycles)
-        
+
         print(f"\nTotal charging hours: {total_charge_hours:.2f}h")
         print(f"Charge to full: {optimizer.charge_hours}h")
         for i, cycle in enumerate(plan.cycles):
-            print(f"  Cycle {i+1} charge: {cycle.charge_window.start_time}-{cycle.charge_window.end_time} "
+            print(f"  Cycle {i + 1} charge: {cycle.charge_window.start_time}-{cycle.charge_window.end_time} "
                   f"({cycle.charge_window.duration_hours:.2f}h)")
-        
+
         # Total charging should be at most 150% of charge_to_full 
         # (some buffer for optimal slot selection, but not double)
         max_reasonable = optimizer.charge_hours * 1.5
@@ -1099,28 +1070,28 @@ class TestRealData20251208:
         not the same evening peak split into two overlapping windows.
         """
         plan = optimizer.analyze_day(prices_dict, current_soc=20.0)
-        
+
         if len(plan.cycles) >= 2:
             # The discharge windows should be either:
             # 1. Non-overlapping (different time periods)
             # 2. Or we should only have 1 cycle (merged peaks)
-            
+
             d1_end = plan.cycles[0].discharge_window.end_slot
             d2_start = plan.cycles[1].discharge_window.start_slot
-            
+
             # Either d2 starts after d1 ends, or they're truly separate periods
             # (morning vs evening, not both evening)
             is_sequential = d2_start >= d1_end
-            
+
             # Check if both are in the same "evening" period (slots 60-96 = 15:00-24:00)
             d1_mid = (plan.cycles[0].discharge_window.start_slot + plan.cycles[0].discharge_window.end_slot) // 2
             d2_mid = (plan.cycles[1].discharge_window.start_slot + plan.cycles[1].discharge_window.end_slot) // 2
             both_evening = d1_mid >= 60 and d2_mid >= 60
-            
+
             print(f"\nD1 midpoint: slot {d1_mid} ({d1_mid // 4:02d}:{(d1_mid % 4) * 15:02d})")
             print(f"D2 midpoint: slot {d2_mid} ({d2_mid // 4:02d}:{(d2_mid % 4) * 15:02d})")
             print(f"Sequential: {is_sequential}, Both evening: {both_evening}")
-            
+
             if both_evening:
                 assert is_sequential, \
                     "Two cycles targeting same evening period should be sequential, not overlapping"
@@ -1143,26 +1114,26 @@ class TestDischargeWindowOverlapPrevention:
         # Valley at night
         for i in range(0, 20):
             prices[i] = 60
-        
+
         plan = optimizer.analyze_day(prices, current_soc=20.0)
-        
+
         print(f"\nAdjacent peaks test:")
         print(f"Cycles: {len(plan.cycles)}")
         for c in plan.cycles:
             print(f"  {c}")
-        
+
         # With adjacent peaks, we should either:
         # 1. Have only 1 cycle that covers both peaks
         # 2. Or have 2 cycles with non-overlapping discharge windows
         if len(plan.cycles) >= 2:
             d1 = plan.cycles[0].discharge_window
             d2 = plan.cycles[1].discharge_window
-            
+
             # They should not significantly overlap
             overlap_start = max(d1.start_slot, d2.start_slot)
             overlap_end = min(d1.end_slot, d2.end_slot)
             overlap = max(0, overlap_end - overlap_start)
-            
+
             print(f"Overlap: {overlap} slots")
             assert overlap < 4, f"Adjacent peaks caused {overlap} slots of overlap"
 
