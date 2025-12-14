@@ -16,6 +16,10 @@ ECR_REPO="${ECR_REPO:?Error: ECR_REPO not set}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 LAMBDA_FUNCTION_NAME="${LAMBDA_FUNCTION_NAME:-alpha-ess-charging-optimizer}"
 
+# Required environment variables for AWS credentials
+AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:?Error: AWS_ACCESS_KEY_ID not set}"
+AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:?Error: AWS_SECRET_ACCESS_KEY not set}"
+
 # Required environment variables for Lambda (AlphaESS API)
 APP_ID="${APP_ID:?Error: APP_ID not set}"
 APP_SECRET="${APP_SECRET:?Error: APP_SECRET not set}"
