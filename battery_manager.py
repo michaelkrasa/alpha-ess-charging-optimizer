@@ -40,3 +40,11 @@ class BatteryManager:
         capacity = self.battery_capacity_kwh or 15.5  # Fallback if not fetched from API
         return (hours * self.AVG_DAY_LOAD_KW / capacity) * 100
 
+
+    def calculate_full_discharge_slots(self) -> int:
+        """Calculate slots needed to fully discharge from max to min SOC"""
+        if not self.battery_capacity_kwh:
+            return int(self.charge_hours * 4)  # Approximate as symmetric to charge
+        usable_kwh = ((self.MAX_SOC - self.MIN_SOC) / 100) * self.battery_capacity_kwh
+        hours = usable_kwh / self.AVG_DAY_LOAD_KW
+        return int(hours * 4) * 1.2 # add buffer

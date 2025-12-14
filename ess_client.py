@@ -52,6 +52,15 @@ class ESSClient:
             logger.error(f"Failed to get battery capacity: {e}")
             return None
 
+    def _format_periods(self, period1: Optional[Tuple[str, str]], period2: Optional[Tuple[str, str]]) -> str:
+        """Format time periods for logging"""
+        periods = []
+        if period1 and period1[0] != "00:00":
+            periods.append(f"{period1[0]}→{period1[1]}")
+        if period2 and period2[0] != "00:00":
+            periods.append(f"{period2[0]}→{period2[1]}")
+        return ", ".join(periods) if periods else "none"
+
     async def set_charging_schedule(self, enable: bool, period1: Optional[Tuple[str, str]] = None, period2: Optional[Tuple[str, str]] = None) -> bool:
         """Set battery charging schedule"""
         try:
@@ -64,12 +73,10 @@ class ESSClient:
             )
 
             if enable:
-                logger.info(f"  ✓ Charging enabled:")
-                logger.info(f"    P1: {t1_start}-{t1_end}")
-                if period2 and period2[0] != "00:00":
-                    logger.info(f"    P2: {t2_start}-{t2_end}")
+                periods_str = self._format_periods(period1, period2)
+                logger.info(f"✓ Charging enabled: {periods_str}")
             else:
-                logger.info("  ✓ Charging disabled")
+                logger.info("✓ Charging disabled")
             return True
         except Exception as e:
             logger.error(f"Failed to set charging schedule: {e}")
@@ -87,12 +94,10 @@ class ESSClient:
             )
 
             if enable:
-                logger.info(f"  ✓ Discharge enabled:")
-                logger.info(f"    P1: {t1_start}-{t1_end}")
-                if period2 and period2[0] != "00:00":
-                    logger.info(f"    P2: {t2_start}-{t2_end}")
+                periods_str = self._format_periods(period1, period2)
+                logger.info(f"✓ Discharge enabled: {periods_str}")
             else:
-                logger.info("  ✓ Discharge disabled")
+                logger.info("✓ Discharge disabled")
             return True
         except Exception as e:
             logger.error(f"Failed to set discharge schedule: {e}")

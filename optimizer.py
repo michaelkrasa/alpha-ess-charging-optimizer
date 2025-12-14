@@ -10,7 +10,7 @@ import argparse
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from ote_cr_price_fetcher import PriceFetcher
@@ -106,6 +106,48 @@ class ESSOptimizer:
 
     def estimate_soc_after_discharge(self, current_soc: float, discharge_hours: float) -> float:
         return self.battery_manager.estimate_soc_after_discharge(current_soc, discharge_hours)
+    
+    def _validate_discharge_window(self, charge_window: PriceWindow, discharge_window: PriceWindow, start_soc: float) -> bool:
+        """Validate that discharge window is long enough to fully discharge what was charged
+        
+        Args:
+            charge_window: The charging window
+            discharge_window: The discharge window to validate
+            start_soc: Starting SOC percentage before charging
+        """
+        if not self.battery_manager.battery_capacity_kwh:
+            # Can't validate without capacity, allow it
+            return True
+        
+        # Calculate actual energy that will be charged based on charge duration and starting SOC
+        charge_duration_hours = charge_window.duration_hours
+        
+        # Calculate SOC change: charge_rate = (MAX_SOC - MIN_SOC) / charge_to_full_hours per hour
+        # SOC gained = charge_duration * (100 / charge_to_full_hours)
+        soc_gained = (charge_duration_hours / self.battery_manager.charge_hours) * 100
+        
+        # Cap at maximum possible (can't charge above MAX_SOC)
+        end_soc = min(self.battery_manager.MAX_SOC, start_soc + soc_gained)
+        actual_soc_gained = end_soc - start_soc
+        
+        # Calculate energy charged in kWh
+        capacity_kwh = self.battery_manager.battery_capacity_kwh
+        energy_charged_kwh = (actual_soc_gained / 100) * capacity_kwh
+        
+        # Calculate discharge time needed based on average load
+        discharge_time_needed_hours = energy_charged_kwh / self.battery_manager.AVG_DAY_LOAD_KW
+        
+        # Get actual discharge duration
+        discharge_duration_hours = discharge_window.duration_hours
+        
+        # Allow 5% buffer for rounding
+        is_valid = discharge_duration_hours >= discharge_time_needed_hours * 0.95
+        
+        if not is_valid:
+            logger.info(f"Skipping cycle: discharge window {discharge_window.duration_hours:.2f}h too short "
+                       f"for {energy_charged_kwh:.1f} kWh charged (SOC {start_soc:.0f}%→{end_soc:.0f}%, needs {discharge_time_needed_hours:.2f}h)")
+        
+        return is_valid
 
     async def set_charging_schedule(self, enable: bool, period1=None, period2=None) -> bool:
         return await self.ess_client.set_charging_schedule(enable, period1, period2)
@@ -125,16 +167,70 @@ class ESSOptimizer:
     def _find_profitable_discharge_window(self, charge_price: float, slot_prices: Dict[int, float], after_slot: int = 0, exclude_slots=None):
         return self.price_analyzer.find_profitable_discharge_window(charge_price, slot_prices, after_slot, exclude_slots)
 
-    def _create_charge_window(self, valley: PriceWindow, slot_prices: Dict[int, float], slots_needed: Optional[int] = None) -> PriceWindow:
-        """Create optimal charge window within valley (exposed for testing)"""
+    def _create_charge_window(self, valley: PriceWindow, slot_prices: Dict[int, float], slots_needed: Optional[int] = None, is_overnight: bool = False) -> PriceWindow:
+        """Create optimal charge window within valley (exposed for testing)
+        
+        For overnight charging, extends valley if needed to get full charge_to_full hours.
+        """
         if slots_needed is None:
             slots_needed = int(self.battery_manager.charge_hours * 4)
 
-        actual_slots = min(slots_needed, valley.end_slot - valley.start_slot)
+        valley_slots = valley.end_slot - valley.start_slot
+        
+        # For overnight charging, ensure we get the full charge time by extending valley if needed
+        if is_overnight and valley_slots < slots_needed:
+            # Try to extend the valley forward/backward to get enough slots
+            extended_valley = self._extend_valley_for_overnight_charging(
+                valley, slot_prices, slots_needed
+            )
+            if extended_valley:
+                valley = extended_valley
+                valley_slots = valley.end_slot - valley.start_slot
+                logger.info(f"Extended overnight valley to {valley_slots} slots (needed {slots_needed})")
+            else:
+                logger.warning(f"⚠️  Cannot extend overnight valley enough: have {valley_slots} slots, need {slots_needed} slots")
+
+        actual_slots = min(slots_needed, valley_slots)
         actual_slots = max(4, actual_slots)
+        
+        # Warn if overnight charging won't get full charge
+        if is_overnight and actual_slots < slots_needed:
+            logger.warning(f"⚠️  Overnight charging window only {actual_slots} slots ({actual_slots/4:.1f}h), "
+                          f"need {slots_needed} slots ({slots_needed/4:.1f}h) for full charge")
 
         start, end, avg = self.price_analyzer.find_cheapest_window_in_valley(valley, actual_slots, slot_prices)
         return PriceWindow(start, end, avg, 'valley')
+    
+    def _extend_valley_for_overnight_charging(self, valley: PriceWindow, slot_prices: Dict[int, float], slots_needed: int) -> Optional[PriceWindow]:
+        """Extend overnight valley to get enough slots for full charging"""
+        valley_avg = valley.avg_price
+        # Allow extending to prices up to 20% above valley average for overnight charging
+        max_price = valley_avg * 1.2
+        
+        extended_start = valley.start_slot
+        extended_end = valley.end_slot
+        
+        # Extend backward first (earlier in night)
+        for slot in range(valley.start_slot - 1, max(0, valley.start_slot - 20), -1):
+            if slot_prices.get(slot, float('inf')) <= max_price:
+                extended_start = slot
+            else:
+                break
+        
+        # Extend forward (later in morning)
+        for slot in range(valley.end_slot, min(SLOTS_PER_DAY, valley.end_slot + 20)):
+            if slot_prices.get(slot, float('inf')) <= max_price:
+                extended_end = slot + 1
+            else:
+                break
+        
+        # Check if we have enough slots now
+        if extended_end - extended_start >= slots_needed:
+            extended_prices = [slot_prices[s] for s in range(extended_start, extended_end)]
+            extended_avg = sum(extended_prices) / len(extended_prices) if extended_prices else valley_avg
+            return PriceWindow(extended_start, extended_end, extended_avg, 'valley')
+        
+        return None
 
     async def get_battery_soc(self) -> Optional[float]:
         """Get current battery SOC and update capacity from API"""
@@ -243,11 +339,11 @@ class ESSOptimizer:
             # Use full valley for overnight or depleted battery
             is_overnight = valley.start_slot < 28
             if is_overnight or estimated_soc < 30:
-                optimal_charge_window = self._create_charge_window(valley, slot_prices)
+                optimal_charge_window = self._create_charge_window(valley, slot_prices, is_overnight=is_overnight)
                 logger.info(f"Full valley charging (SOC={estimated_soc:.0f}%, overnight={is_overnight})")
             else:
                 slots_needed = self.battery_manager.calculate_charging_slots_needed(estimated_soc, self.battery_manager.MAX_SOC)
-                optimal_charge_window = self._create_charge_window(valley, slot_prices, slots_needed)
+                optimal_charge_window = self._create_charge_window(valley, slot_prices, slots_needed, is_overnight=False)
 
             # Extend discharge, but don't overlap with already used discharge slots
             next_valley_start = SLOTS_PER_DAY
@@ -277,6 +373,10 @@ class ESSOptimizer:
             overlap = len(extended_slots & used_discharge_slots)
             if overlap > len(extended_slots) * 0.5:
                 logger.info(f"Skipping cycle: discharge {extended_discharge} overlaps {overlap} slots with existing")
+                continue
+
+            # Validate that discharge window is long enough for day cycles (not overnight)
+            if not is_overnight and not self._validate_discharge_window(optimal_charge_window, extended_discharge, estimated_soc):
                 continue
 
             cycles.append(ArbitrageCycle(optimal_charge_window, extended_discharge, spread))
@@ -435,13 +535,19 @@ async def main():
         "--date",
         type=int,
         metavar="DAY",
-        help="Day of month (1-31) for dry run mode. Optimizes for that day in the current month without making API changes."
+        help="Day of month (1-31). Optimizes for that day in the current month."
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        "-d",
+        action="store_true",
+        help="Run in dry run mode without making API changes to schedules."
     )
 
     args = parser.parse_args()
     optimizer = ESSOptimizer()
 
-    # --date always implies dry run
     if args.date is not None:
         if not (1 <= args.date <= 31):
             logger.error(f"Invalid date: {args.date}. Must be between 1 and 31.")
@@ -450,8 +556,9 @@ async def main():
         now = datetime.now()
         try:
             target_date = datetime(now.year, now.month, args.date)
-            logger.info(f"Dry run mode: Optimizing for {target_date.date()}")
-            await optimizer.run_once(target_date, dry_run=True)
+            mode = "dry run" if args.dry_run else "live"
+            logger.info(f"{mode.capitalize()} mode: Optimizing for {target_date.date()}")
+            await optimizer.run_once(target_date, dry_run=args.dry_run)
         except ValueError as e:
             logger.error(f"Invalid date: {e}")
             return

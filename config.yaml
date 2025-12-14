@@ -1,5 +1,5 @@
 charge_to_full: 3  # how many hours to charge from empty to full
-price_multiplier: 1.2  # only charge if price is lower by this multiplier than mean price of the day
+price_multiplier: 1.18  # only charge if price is lower by this multiplier than mean price of the day
 
 # Battery parameters
 avg_day_load_kw: 1.8        # Average household load during peaks in kW
