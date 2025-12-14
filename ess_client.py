@@ -1,7 +1,6 @@
 """AlphaESS API client for battery data and schedule management"""
 
 import logging
-import os
 from typing import Optional, Tuple
 
 from alphaess.alphaess import alphaess
@@ -106,4 +105,3 @@ class ESSClient:
     async def close(self):
         """Close the API client"""
         await self.client.close()
-

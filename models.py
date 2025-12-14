@@ -66,4 +66,3 @@ class OptimizationPlan:
     @property
     def total_spread(self) -> float:
         return sum(c.spread for c in self.cycles)
-

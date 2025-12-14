@@ -60,7 +60,7 @@ class PriceCache:
         """Get cached prices for a date"""
         cache = self.load()
         cache = self.cleanup(cache)
-        
+
         if date_str in cache:
             logger.debug(f"price_cache.get cached=true date={date_str}")
             # Convert string keys back to int for slot_prices
@@ -72,7 +72,7 @@ class PriceCache:
         today = datetime.now().date()
         tomorrow = today + timedelta(days=1)
         date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
-        
+
         if date_obj in {today, tomorrow}:
             cache = self.load()
             cache = self.cleanup(cache)
@@ -82,4 +82,3 @@ class PriceCache:
             logger.debug(f"price_cache.set cached=true date={date_obj} slots={SLOTS_PER_DAY}")
         else:
             logger.debug(f"price_cache.set cached=false date={date_obj} slots={SLOTS_PER_DAY} reason=outside_window")
-

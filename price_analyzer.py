@@ -41,7 +41,7 @@ class PriceAnalyzer:
         all_valleys = self._merge_valleys(absolute_valleys, relative_valleys)
 
         logger.debug(f"detect_valleys_and_peaks mean={mean_price:.0f} valley_threshold={valley_threshold:.0f} "
-                    f"peak_threshold={peak_threshold:.0f} valleys={len(all_valleys)} peaks={len(peaks)}")
+                     f"peak_threshold={peak_threshold:.0f} valleys={len(all_valleys)} peaks={len(peaks)}")
         return all_valleys, peaks
 
     def _find_valleys_between_peaks(self, slot_prices: Dict[int, float], peaks: List[PriceWindow]) -> List[PriceWindow]:
@@ -159,8 +159,8 @@ class PriceAnalyzer:
 
         best_end = best_start + actual_slots
         logger.debug(f"find_cheapest_window_in_valley start={best_start // 4:02d}:{(best_start % 4) * 15:02d} "
-                    f"end={best_end // 4:02d}:{(best_end % 4) * 15:02d} avg={best_avg:.0f} "
-                    f"valley={valley.start_time}-{valley.end_time}")
+                     f"end={best_end // 4:02d}:{(best_end % 4) * 15:02d} avg={best_avg:.0f} "
+                     f"valley={valley.start_time}-{valley.end_time}")
 
         return best_start, best_end, best_avg
 
@@ -256,7 +256,6 @@ class PriceAnalyzer:
 
         if extended_start != peak.start_slot or extended_end != peak.end_slot:
             logger.debug(f"extend_discharge_window original={peak.start_time}-{peak.end_time} "
-                        f"extended={extended_start // 4:02d}:{(extended_start % 4) * 15:02d}-{extended_end // 4:02d}:{(extended_end % 4) * 15:02d}")
+                         f"extended={extended_start // 4:02d}:{(extended_start % 4) * 15:02d}-{extended_end // 4:02d}:{(extended_end % 4) * 15:02d}")
 
         return PriceWindow(extended_start, extended_end, extended_avg, 'peak')
-
