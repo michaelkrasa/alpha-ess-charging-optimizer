@@ -12,6 +12,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from ote_cr_price_fetcher import PriceFetcher
 
@@ -68,13 +69,16 @@ class ESSOptimizer:
         self.price_fetcher = PriceFetcher()
         self.price_cache = PriceCache()
 
+        # Timezone configuration
+        self.timezone = ZoneInfo(self.config.get('timezone', 'UTC'))
+
         # Store config values for convenience (backward compatibility)
         self.MIN_WINDOW_SLOTS = int(self.config.get('min_window_slots', 4))
         self.DISCHARGE_EXTENSION_THRESHOLD = float(self.config.get('discharge_extension_threshold', 0.85))
         self.price_multiplier = float(self.config['price_multiplier'])
         self.charge_hours = float(self.config['charge_to_full'])
 
-        logger.info("ESS Optimizer initialized")
+        logger.info(f"ESS Optimizer initialized (timezone: {self.timezone})")
 
     # Backward compatibility properties
     @property
@@ -531,10 +535,16 @@ class ESSOptimizer:
         return True
 
     async def run_once(self, target_date: Optional[datetime] = None, dry_run: bool = False):
-        """Run optimization once for a given day (defaults to today)"""
+        """Run optimization once for a given day (defaults to today in configured timezone)"""
         try:
             if target_date is None:
-                target_date = datetime.now()
+                # Get current UTC time and convert to configured timezone for correct date
+                utc_now = datetime.now(ZoneInfo('UTC'))
+                local_now = utc_now.astimezone(self.timezone)
+                target_date = local_now
+                offset_hours = local_now.utcoffset().total_seconds() / 3600
+                offset_str = f"{offset_hours:+.0f}h" if offset_hours != 0 else ""
+                logger.info(f"Timezone: UTC → {self.timezone}{offset_str}")
             success = await self.optimize_for_day(target_date, dry_run=dry_run)
             logger.info("✓ Optimization completed" if success else "✗ Optimization failed")
         finally:
