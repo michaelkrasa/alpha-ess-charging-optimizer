@@ -23,17 +23,30 @@ from models import ArbitrageCycle, OptimizationPlan, PriceWindow, SLOTS_PER_DAY
 from price_analyzer import PriceAnalyzer
 from price_cache import PriceCache
 
-# Configure logging - Lambda uses CloudWatch via stdout, local uses file + stdout
+# Configure logging - Lambda uses CloudWatch via stdout (no timestamps), local uses file + stdout (with timestamps)
 if not logging.getLogger().handlers:
     _is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
-    handlers = [logging.StreamHandler()]
-    if not _is_lambda:
-        handlers.append(logging.FileHandler('logs/ess_optimizer.log'))
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=handlers
-    )
+
+    if _is_lambda:
+        # Lambda: Let CloudWatch handle timestamps
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+
+        # Remove default handlers
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(levelname)s %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    else:
+        # Local development: Use timestamps
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[logging.StreamHandler(), logging.FileHandler('logs/ess_optimizer.log')]
+        )
 
 logger = logging.getLogger(__name__)
 
@@ -539,9 +552,7 @@ class ESSOptimizer:
         try:
             if target_date is None:
                 # Get current UTC time and convert to configured timezone for correct date
-                utc_now = datetime.now(ZoneInfo('UTC'))
-                local_now = utc_now.astimezone(self.timezone)
-                target_date = local_now
+                target_date = datetime.now(ZoneInfo('UTC')).astimezone(self.timezone)
                 offset_hours = local_now.utcoffset().total_seconds() / 3600
                 offset_str = f"{offset_hours:+.0f}h" if offset_hours != 0 else ""
                 logger.info(f"Timezone: UTC → {self.timezone}{offset_str}")

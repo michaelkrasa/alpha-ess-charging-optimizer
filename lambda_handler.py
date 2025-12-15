@@ -11,9 +11,18 @@ import logging
 import os
 from datetime import datetime
 
-# Configure logging for CloudWatch
+# Configure logging for CloudWatch - let CloudWatch handle timestamps
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+# Remove default handlers
+for handler in logger.handlers:
+    logger.removeHandler(handler)
+
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(levelname)s %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 # Suppress noisy loggers
 logging.getLogger('aiohttp').setLevel(logging.WARNING)
