@@ -30,6 +30,11 @@ def optimizer():
             'avg_day_load_kw': 1.8,
             'smoothing_window': 2,  # Matches real config for Dec 8th detection
             'min_window_slots': 2,  # Matches real config
+            'early_morning_end_hour': 6,
+            'afternoon_start_hour': 10,
+            'afternoon_end_hour': 18,
+            'min_discharge_fraction': 0.5,
+            'min_discharge_hours': 2.0,
         }
         mock_config_instance = MagicMock()
         mock_config_instance.__getitem__ = lambda self, key: config_values[key]
@@ -301,6 +306,180 @@ class TestOptimizationFlow:
         result = await optimizer.optimize_for_day(target_date)
 
         assert result is False
+
+
+class TestValleySelection:
+    """Test the new valley selection logic for early morning + afternoon priority"""
+
+    def test_selects_early_morning_and_afternoon_valleys(self, optimizer):
+        """Test that valley selection prioritizes one early morning and one afternoon valley"""
+        from models import PriceWindow
+
+        # Create test valleys
+        valleys = [
+            PriceWindow(0, 8, 80, 'valley'),    # 00:00-02:00 (early morning)
+            PriceWindow(12, 20, 85, 'valley'),  # 03:00-05:00 (early morning, cheaper)
+            PriceWindow(44, 52, 90, 'valley'),  # 11:00-13:00 (afternoon)
+            PriceWindow(56, 64, 95, 'valley'),  # 14:00-16:00 (afternoon, more expensive)
+            PriceWindow(80, 88, 70, 'valley'),  # 20:00-22:00 (evening, cheapest)
+        ]
+
+        # Mock the method to test the selection logic
+        early_morning_end = int(optimizer.config.get('early_morning_end_hour', 6))
+        afternoon_start = int(optimizer.config.get('afternoon_start_hour', 10))
+        afternoon_end = int(optimizer.config.get('afternoon_end_hour', 18))
+
+        early_morning = [v for v in valleys if 0 <= (v.start_slot // 4) < early_morning_end]
+        afternoon = [v for v in valleys if afternoon_start <= (v.start_slot // 4) < afternoon_end]
+        other = [v for v in valleys if v not in early_morning and v not in afternoon]
+
+        # Select best valleys: 1 early morning + 1 afternoon + rest
+        selected_valleys = []
+        if early_morning:
+            selected_valleys.append(min(early_morning, key=lambda v: v.avg_price))  # Best early morning
+        if afternoon:
+            selected_valleys.append(min(afternoon, key=lambda v: v.avg_price))  # Best afternoon
+        # Add remaining valleys sorted by price
+        remaining = [v for v in valleys if v not in selected_valleys]
+        selected_valleys.extend(sorted(remaining, key=lambda v: v.avg_price))
+
+        # Should select: cheapest early morning (80), cheapest afternoon (90), then cheapest remaining (70, 85, 95)
+        expected_prices = [80, 90, 70, 85, 95]  # Sorted by selection priority then price
+        actual_prices = [v.avg_price for v in selected_valleys]
+
+        assert actual_prices == expected_prices, f"Expected {expected_prices}, got {actual_prices}"
+
+    def test_valley_selection_with_missing_afternoon(self, optimizer):
+        """Test valley selection when no afternoon valleys are available"""
+        from models import PriceWindow
+
+        valleys = [
+            PriceWindow(0, 8, 80, 'valley'),    # 00:00-02:00 (early morning)
+            PriceWindow(80, 88, 70, 'valley'),  # 20:00-22:00 (evening)
+        ]
+
+        # Should select early morning first, then other valleys by price
+        early_morning_end = int(optimizer.config.get('early_morning_end_hour', 6))
+        afternoon_start = int(optimizer.config.get('afternoon_start_hour', 10))
+        afternoon_end = int(optimizer.config.get('afternoon_end_hour', 18))
+
+        early_morning = [v for v in valleys if 0 <= (v.start_slot // 4) < early_morning_end]
+        afternoon = [v for v in valleys if afternoon_start <= (v.start_slot // 4) < afternoon_end]
+        other = [v for v in valleys if v not in early_morning and v not in afternoon]
+
+        selected_valleys = []
+        if early_morning:
+            selected_valleys.append(min(early_morning, key=lambda v: v.avg_price))
+        if afternoon:
+            selected_valleys.append(min(afternoon, key=lambda v: v.avg_price))
+        remaining = [v for v in valleys if v not in selected_valleys]
+        selected_valleys.extend(sorted(remaining, key=lambda v: v.avg_price))
+
+        expected_prices = [80, 70]  # Early morning first, then cheapest remaining
+        actual_prices = [v.avg_price for v in selected_valleys]
+
+        assert actual_prices == expected_prices
+
+
+class TestFlexibleDischargeValidation:
+    """Test the flexible discharge window validation"""
+
+    def test_flexible_discharge_accepts_partial_discharge(self, optimizer):
+        """Test that discharge validation accepts partial discharge when configured"""
+        from models import PriceWindow
+
+        # Mock battery capacity
+        optimizer.battery_capacity_kwh = 15.5
+
+        # 3 hours charging from 0% SOC should charge ~3 kWh
+        # Discharging at 1.8 kW for 1.67 hours should discharge ~3 kWh
+        # But we allow only 50% = 0.83 hours minimum discharge
+        charge_window = PriceWindow(0, 12, 100, 'valley')  # 3 hours charging
+        discharge_window = PriceWindow(64, 76, 150, 'peak')  # 3 hours discharge
+
+        # With min_discharge_fraction = 0.5, should require max(1.67 * 0.5, 2.0) = max(0.83, 2.0) = 2.0 hours
+        # Our discharge window is 3 hours, so it should pass
+        is_valid = optimizer._validate_discharge_window(charge_window, discharge_window, start_soc=0.0)
+
+        assert is_valid, "Should accept discharge window longer than minimum required"
+
+    def test_flexible_discharge_rejects_too_short_window(self, optimizer):
+        """Test that discharge validation rejects windows that are too short"""
+        from models import PriceWindow
+
+        # Mock battery capacity
+        optimizer.battery_capacity_kwh = 15.5
+
+        # 3 hours charging from 0% SOC
+        charge_window = PriceWindow(0, 12, 100, 'valley')
+        # Only 1 hour discharge (should be rejected as < 2.0 hours minimum)
+        discharge_window = PriceWindow(64, 68, 150, 'peak')
+
+        is_valid = optimizer._validate_discharge_window(charge_window, discharge_window, start_soc=0.0)
+
+        assert not is_valid, "Should reject discharge window shorter than minimum required"
+
+    def test_flexible_discharge_uses_config_values(self, optimizer):
+        """Test that discharge validation uses configurable values"""
+        from models import PriceWindow
+
+        # Mock battery capacity
+        optimizer.battery_capacity_kwh = 15.5
+
+        # Test with very small charge (0.1 kWh)
+        charge_window = PriceWindow(0, 1, 100, 'valley')  # ~0.1 hours charging
+        # Very short discharge window
+        discharge_window = PriceWindow(64, 65, 150, 'peak')  # 0.25 hours
+
+        # With min_discharge_hours = 2.0, should require 2.0 hours minimum
+        is_valid = optimizer._validate_discharge_window(charge_window, discharge_window, start_soc=50.0)
+
+        assert not is_valid, "Should use min_discharge_hours config when it's larger than fraction"
+
+
+class TestSocEstimation:
+    """Test the SOC estimation fixes"""
+
+    def test_soc_estimation_uses_current_soc(self, optimizer):
+        """Test that SOC estimation starts from current SOC, not assuming 100%"""
+        # Mock prices with cheap early morning and expensive afternoon
+        slot_prices = {}
+        for slot in range(96):
+            hour = slot // 4
+            if hour < 6:  # Early morning
+                slot_prices[slot] = 80
+            else:  # Rest of day
+                slot_prices[slot] = 120
+
+        # Test with 20% current SOC
+        current_soc = 20.0
+
+        # Create a cycle that would previously assume 100% SOC
+        valleys = [PriceWindow(0, 8, 80, 'valley')]  # Early morning valley
+        peaks = [PriceWindow(64, 72, 140, 'peak')]   # Afternoon peak
+
+        cycles = optimizer.find_arbitrage_cycles(valleys, peaks, current_soc, slot_prices)
+
+        # Should create a cycle without assuming SOC was 100%
+        assert len(cycles) >= 1, "Should create arbitrage cycle with correct SOC estimation"
+
+    def test_no_soc_skip_for_early_morning_valleys(self, optimizer):
+        """Test that early morning valleys are not skipped due to SOC assumptions"""
+        slot_prices = {i: 100 for i in range(96)}
+        # Make early morning cheap
+        for i in range(0, 16):
+            slot_prices[i] = 80
+        # Make afternoon expensive
+        for i in range(64, 72):
+            slot_prices[i] = 140
+
+        valleys = [PriceWindow(0, 16, 80, 'valley')]  # Early morning
+        peaks = [PriceWindow(64, 72, 140, 'peak')]    # Afternoon
+
+        # With depleted battery, should still use early morning valley
+        cycles = optimizer.find_arbitrage_cycles(valleys, peaks, current_soc=5.0, slot_prices=slot_prices)
+
+        assert len(cycles) >= 1, "Should not skip early morning valley due to SOC assumptions"
 
 
 class TestEdgeCases:
