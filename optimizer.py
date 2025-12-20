@@ -57,6 +57,9 @@ class ESSOptimizer:
     def __init__(self, config_path: str = "config.yaml"):
         self.config = Config(config_path)
 
+        # Timezone configuration (needed for price cache)
+        self.timezone = ZoneInfo(self.config.get('timezone', 'UTC'))
+
         # Initialize components
         self.ess_client = ESSClient(
             self.config['app_id'],
@@ -80,10 +83,7 @@ class ESSOptimizer:
         )
 
         self.price_fetcher = PriceFetcher()
-        self.price_cache = PriceCache()
-
-        # Timezone configuration
-        self.timezone = ZoneInfo(self.config.get('timezone', 'UTC'))
+        self.price_cache = PriceCache(self.timezone)
 
         # Store config values for convenience (backward compatibility)
         self.MIN_WINDOW_SLOTS = int(self.config.get('min_window_slots', 4))
@@ -157,12 +157,15 @@ class ESSOptimizer:
         # Get actual discharge duration
         discharge_duration_hours = discharge_window.duration_hours
 
-        # Allow 5% buffer for rounding
-        is_valid = discharge_duration_hours >= discharge_time_needed_hours * 0.95
+        # For arbitrage throughout the day, allow partial discharge during peak hours
+        min_discharge_fraction = float(self.config.get('min_discharge_fraction', 0.5))
+        min_discharge_hours = float(self.config.get('min_discharge_hours', 2.0))
+        min_required_hours = min(discharge_time_needed_hours * min_discharge_fraction, min_discharge_hours)
+        is_valid = discharge_duration_hours >= min_required_hours
 
         if not is_valid:
             logger.info(f"Skipping cycle: discharge window {discharge_window.duration_hours:.2f}h too short "
-                        f"for {energy_charged_kwh:.1f} kWh charged (SOC {start_soc:.0f}%→{end_soc:.0f}%, needs {discharge_time_needed_hours:.2f}h)")
+                        f"for {energy_charged_kwh:.1f} kWh charged (SOC {start_soc:.0f}%→{end_soc:.0f}%, needs {min_required_hours:.2f}h minimum)")
 
         return is_valid
 
@@ -194,26 +197,15 @@ class ESSOptimizer:
 
         valley_slots = valley.end_slot - valley.start_slot
 
-        # For overnight charging, ensure we get the full charge time by extending valley if needed
-        if is_overnight and valley_slots < slots_needed:
-            # Try to extend the valley forward/backward to get enough slots
-            extended_valley = self._extend_valley_for_overnight_charging(
-                valley, slot_prices, slots_needed
-            )
-            if extended_valley:
-                valley = extended_valley
-                valley_slots = valley.end_slot - valley.start_slot
-                logger.info(f"Extended overnight valley to {valley_slots} slots (needed {slots_needed})")
-            else:
-                logger.warning(f"⚠️  Cannot extend overnight valley enough: have {valley_slots} slots, need {slots_needed} slots")
-
-        actual_slots = min(slots_needed, valley_slots)
-        actual_slots = max(4, actual_slots)
-
-        # Warn if overnight charging won't get full charge
-        if is_overnight and actual_slots < slots_needed:
-            logger.warning(f"⚠️  Overnight charging window only {actual_slots} slots ({actual_slots / 4:.1f}h), "
-                           f"need {slots_needed} slots ({slots_needed / 4:.1f}h) for full charge")
+        # For overnight charging, prefer to use the full available valley
+        # Don't require extending to get full charge time - charge what's available
+        if is_overnight:
+            # Use all available slots in the valley, but cap at what we need for full charge
+            actual_slots = min(valley_slots, slots_needed)
+            actual_slots = max(4, actual_slots)
+        else:
+            actual_slots = min(slots_needed, valley_slots)
+            actual_slots = max(4, actual_slots)
 
         start, end, avg = self.price_analyzer.find_cheapest_window_in_valley(valley, actual_slots, slot_prices)
         return PriceWindow(start, end, avg, 'valley')
@@ -291,11 +283,32 @@ class ESSOptimizer:
                               ) -> List[ArbitrageCycle]:
         """Match valleys with discharge opportunities to create arbitrage cycles"""
         cycles = []
-        sorted_valleys = sorted(valleys, key=lambda v: v.start_slot)
+        # For optimal arbitrage, ensure one early morning and one afternoon cycle
+        early_morning_end = int(self.config.get('early_morning_end_hour', 6))
+        afternoon_start = int(self.config.get('afternoon_start_hour', 10))
+        afternoon_end = int(self.config.get('afternoon_end_hour', 18))
+
+        early_morning = [v for v in valleys if 0 <= (v.start_slot // 4) < early_morning_end]
+        afternoon = [v for v in valleys if afternoon_start <= (v.start_slot // 4) < afternoon_end]
+        other = [v for v in valleys if v not in early_morning and v not in afternoon]
+
+        # Select best valleys: 1 early morning + 1 afternoon + rest
+        selected_valleys = []
+        if early_morning:
+            selected_valleys.append(min(early_morning, key=lambda v: v.avg_price))  # Best early morning
+        if afternoon:
+            selected_valleys.append(min(afternoon, key=lambda v: v.avg_price))  # Best afternoon
+        # Add remaining valleys sorted by price
+        remaining = [v for v in valleys if v not in selected_valleys]
+        selected_valleys.extend(sorted(remaining, key=lambda v: v.avg_price))
+
+        sorted_valleys = selected_valleys
+
         sorted_peaks = sorted(peaks, key=lambda p: p.start_slot)
 
         used_peaks = set()
         used_discharge_slots = set()  # Track which slots are already used for discharge
+        used_charge_slots = set()  # Track which slots are already used for charging
         estimated_soc = current_soc
         last_charge_end_slot = 0
         last_discharge_start_slot = 0
@@ -327,31 +340,19 @@ class ESSOptimizer:
             if spread <= 0:
                 continue
 
-            # Estimate SOC at the start of this charge window
-            # Key insight: If this charge starts BEFORE the previous discharge,
-            # the battery is still full from the previous charge
-            if valley.start_slot < last_discharge_start_slot and last_charge_end_slot > 0:
-                # This charge happens before previous discharge - battery still at 100%
-                estimated_soc = 100.0
-                # Only account for consumption since last charge ended
-                gap_hours = (valley.start_slot - last_charge_end_slot) / 4
-                if gap_hours > 0:
-                    soc_drain = self.battery_manager.estimate_consumption_soc_drain(gap_hours)
-                    estimated_soc = max(self.battery_manager.MIN_SOC, estimated_soc - soc_drain)
+            # Note: Charging periods can be scheduled at different times, so no overlap check needed here
 
-                # CRITICAL: If battery is still well-charged (>50%) and we haven't 
-                # discharged the previous cycle yet, skip this valley - no point
-                # charging an already-charged battery
-                if estimated_soc > 50:
-                    logger.info(f"Skipping valley {valley}: battery still at {estimated_soc:.0f}% "
-                                f"(previous discharge at {last_discharge_start_slot // 4:02d}:{(last_discharge_start_slot % 4) * 15:02d} hasn't happened)")
-                    continue
+            # Estimate SOC at the start of this charge window
+            # Since the optimizer runs once and sets up the schedule for the day,
+            # none of the scheduled events have happened yet. We should use the
+            # current SOC for all calculations, accounting only for consumption
+            # between now and the charge window start.
+            gap_hours = (valley.start_slot - max(last_charge_end_slot, 0)) / 4
+            if gap_hours > 0:
+                soc_drain = self.battery_manager.estimate_consumption_soc_drain(gap_hours)
+                estimated_soc = max(self.battery_manager.MIN_SOC, current_soc - soc_drain)
             else:
-                # Normal case: account for discharge and consumption
-                gap_hours = (valley.start_slot - max(last_charge_end_slot, 0)) / 4
-                if gap_hours > 0:
-                    soc_drain = self.battery_manager.estimate_consumption_soc_drain(gap_hours)
-                    estimated_soc = max(self.battery_manager.MIN_SOC, estimated_soc - soc_drain)
+                estimated_soc = current_soc
 
             # Use full valley for overnight or depleted battery
             is_overnight = valley.start_slot < 28
@@ -411,6 +412,13 @@ class ESSOptimizer:
                     continue
                 optimal_charge_window = self._create_charge_window(valley, slot_prices, slots_needed, is_overnight=False)
 
+            # Check for overlap with already used charging slots
+            charge_slots = set(range(optimal_charge_window.start_slot, optimal_charge_window.end_slot))
+            if charge_slots & used_charge_slots:
+                overlap_count = len(charge_slots & used_charge_slots)
+                logger.info(f"Skipping cycle: charge window {optimal_charge_window} overlaps {overlap_count} slots with existing charging")
+                continue
+
             # Validate that discharge window is long enough for day cycles (not overnight)
             if not is_overnight and not self._validate_discharge_window(optimal_charge_window, extended_discharge, estimated_soc):
                 continue
@@ -421,6 +429,10 @@ class ESSOptimizer:
             # Track used discharge slots
             for slot in range(extended_discharge.start_slot, extended_discharge.end_slot):
                 used_discharge_slots.add(slot)
+
+            # Track used charge slots
+            for slot in range(optimal_charge_window.start_slot, optimal_charge_window.end_slot):
+                used_charge_slots.add(slot)
 
             last_charge_end_slot = optimal_charge_window.end_slot
             last_discharge_start_slot = extended_discharge.start_slot
@@ -553,7 +565,7 @@ class ESSOptimizer:
             if target_date is None:
                 # Get current UTC time and convert to configured timezone for correct date
                 target_date = datetime.now(ZoneInfo('UTC')).astimezone(self.timezone)
-                offset_hours = local_now.utcoffset().total_seconds() / 3600
+                offset_hours = target_date.utcoffset().total_seconds() / 3600
                 offset_str = f"{offset_hours:+.0f}h" if offset_hours != 0 else ""
                 logger.info(f"Timezone: UTC → {self.timezone}{offset_str}")
             success = await self.optimize_for_day(target_date, dry_run=dry_run)
@@ -593,9 +605,10 @@ async def main():
             logger.error(f"Invalid date: {args.date}. Must be between 1 and 31.")
             return
 
-        now = datetime.now()
+        # Use configured timezone for consistency with default behavior
+        now = datetime.now(ZoneInfo('UTC')).astimezone(optimizer.timezone)
         try:
-            target_date = datetime(now.year, now.month, args.date)
+            target_date = datetime(now.year, now.month, args.date, tzinfo=optimizer.timezone)
             mode = "dry run" if args.dry_run else "live"
             logger.info(f"{mode.capitalize()} mode: Optimizing for {target_date.date()}")
             await optimizer.run_once(target_date, dry_run=args.dry_run)
@@ -604,7 +617,7 @@ async def main():
             return
     else:
         # Default: run once for today (expected to be run at midnight)
-        await optimizer.run_once()
+        await optimizer.run_once(dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
+from zoneinfo import ZoneInfo
 
 from models import SLOTS_PER_DAY
 
@@ -15,7 +16,9 @@ logger = logging.getLogger(__name__)
 class PriceCache:
     """Manages price caching for today and tomorrow"""
 
-    def __init__(self):
+    def __init__(self, timezone: ZoneInfo = None):
+        self.timezone = timezone or ZoneInfo('UTC')
+
         # Price cache file path - use /tmp in Lambda (ephemeral but works within invocation)
         self._is_lambda = os.environ.get('AWS_LAMBDA_FUNCTION_NAME') is not None
         if self._is_lambda:
@@ -45,7 +48,7 @@ class PriceCache:
 
     def cleanup(self, cache: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
         """Remove stale entries from price cache, keeping only today and tomorrow"""
-        today = datetime.now().date()
+        today = datetime.now(self.timezone).date()
         tomorrow = today + timedelta(days=1)
         valid_dates = {str(today), str(tomorrow)}
 
@@ -69,7 +72,7 @@ class PriceCache:
 
     def set(self, date_str: str, slot_prices: Dict[int, float]) -> None:
         """Cache prices for a date (only if today or tomorrow)"""
-        today = datetime.now().date()
+        today = datetime.now(self.timezone).date()
         tomorrow = today + timedelta(days=1)
         date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
 

@@ -41,7 +41,8 @@ async def run_optimization(config_path: str) -> dict:
     optimizer = ESSOptimizer(config_path)
 
     try:
-        target_date = datetime.now()
+        # Use configured timezone for consistency
+        target_date = datetime.now(optimizer.timezone)
         logger.info(f"Optimizing for today: {target_date.date()}")
         success = await optimizer.optimize_for_day(target_date, dry_run=False)
 
