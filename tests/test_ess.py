@@ -313,7 +313,7 @@ class TestValleySelection:
 
     def test_selects_early_morning_and_afternoon_valleys(self, optimizer):
         """Test that valley selection prioritizes one early morning and one afternoon valley"""
-        from models import PriceWindow
+        from src.models import PriceWindow
 
         # Create test valleys
         valleys = [
@@ -351,7 +351,7 @@ class TestValleySelection:
 
     def test_valley_selection_with_missing_afternoon(self, optimizer):
         """Test valley selection when no afternoon valleys are available"""
-        from models import PriceWindow
+        from src.models import PriceWindow
 
         valleys = [
             PriceWindow(0, 8, 80, 'valley'),    # 00:00-02:00 (early morning)
@@ -386,7 +386,7 @@ class TestFlexibleDischargeValidation:
 
     def test_flexible_discharge_accepts_partial_discharge(self, optimizer):
         """Test that discharge validation accepts partial discharge when configured"""
-        from models import PriceWindow
+        from src.models import PriceWindow
 
         # Mock battery capacity
         optimizer.battery_capacity_kwh = 15.5
@@ -405,7 +405,7 @@ class TestFlexibleDischargeValidation:
 
     def test_flexible_discharge_rejects_too_short_window(self, optimizer):
         """Test that discharge validation rejects windows that are too short"""
-        from models import PriceWindow
+        from src.models import PriceWindow
 
         # Mock battery capacity
         optimizer.battery_capacity_kwh = 15.5
@@ -421,7 +421,7 @@ class TestFlexibleDischargeValidation:
 
     def test_flexible_discharge_uses_config_values(self, optimizer):
         """Test that discharge validation uses configurable values"""
-        from models import PriceWindow
+        from src.models import PriceWindow
 
         # Mock battery capacity
         optimizer.battery_capacity_kwh = 15.5
