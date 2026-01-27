@@ -12,11 +12,11 @@ max_soc: 100                # Maximum SOC %
 # Technical parameters
 min_window_slots: 2         # Minimum window size in 15-min slots (4 = 1 hour)
 smoothing_window: 2         # Slots to average for price smoothing (4 = 1 hour)
-discharge_extension_threshold: 0.75  # Only extend discharge backward if price >= this % of peak avg
+discharge_extension_threshold: 0.8  # Only extend discharge backward if price >= this % of peak avg
 
 # Valley and discharge timing preferences
-early_morning_end_hour: 6   # Early morning charging ends at this hour (0-6)
+early_morning_end_hour: 5   # Early morning charging ends at this hour (0-5)
 afternoon_start_hour: 10     # Afternoon charging starts at this hour (10-18)
 afternoon_end_hour: 18       # Afternoon charging ends at this hour
 min_discharge_fraction: 0.5  # Minimum fraction of full discharge time required (0.5 = 50%)
-min_discharge_hours: 2.0     # Minimum discharge duration in hours (overrides fraction if larger)
+min_discharge_hours: 1.5     # Minimum discharge duration in hours (overrides fraction if larger)

@@ -36,7 +36,7 @@ async def run_optimization(config_path: str) -> dict:
     
     Runs once for today and exits (Lambda execution model).
     """
-    from optimizer import ESSOptimizer
+    from src.optimizer import ESSOptimizer
 
     optimizer = ESSOptimizer(config_path)
 

@@ -16,12 +16,12 @@ from zoneinfo import ZoneInfo
 
 from ote_cr_price_fetcher import PriceFetcher
 
-from battery_manager import BatteryManager
 from config import Config
-from ess_client import ESSClient
-from models import ArbitrageCycle, OptimizationPlan, PriceWindow, SLOTS_PER_DAY
-from price_analyzer import PriceAnalyzer
-from price_cache import PriceCache
+from .battery_manager import BatteryManager
+from .ess_client import ESSClient
+from .models import ArbitrageCycle, OptimizationPlan, PriceWindow, SLOTS_PER_DAY
+from .price_analyzer import PriceAnalyzer
+from .price_cache import PriceCache
 
 # Configure logging - Lambda uses CloudWatch via stdout (no timestamps), local uses file + stdout (with timestamps)
 if not logging.getLogger().handlers:
@@ -456,14 +456,22 @@ class ESSOptimizer:
                 is_evening = additional.start_slot >= 56  # After 14:00
                 additional = self.price_analyzer.extend_discharge_window(
                     additional, last_cycle.charge_window.avg_price, slot_prices,
-                    max_end_slot=SLOTS_PER_DAY, aggressive_eod=is_evening,
+                    max_end_slot=SLOTS_PER_DAY,
+                    exclude_slots=used_discharge_slots,  # Don't extend into already-used slots
+                    aggressive_eod=is_evening,
                     discharge_extension_threshold=self.DISCHARGE_EXTENSION_THRESHOLD
                 )
 
-                spread = additional.avg_price - last_cycle.charge_window.avg_price
-                if spread > 0:
-                    cycles.append(ArbitrageCycle(last_cycle.charge_window, additional, spread))
-                    logger.info(f"Found additional discharge: {cycles[-1]}")
+                # Verify no overlap with existing discharge windows
+                additional_slots = set(range(additional.start_slot, additional.end_slot))
+                overlap = len(additional_slots & used_discharge_slots)
+                if overlap > 0:
+                    logger.info(f"Skipping additional discharge: overlaps {overlap} slots with existing")
+                else:
+                    spread = additional.avg_price - last_cycle.charge_window.avg_price
+                    if spread > 0:
+                        cycles.append(ArbitrageCycle(last_cycle.charge_window, additional, spread))
+                        logger.info(f"Found additional discharge: {cycles[-1]}")
 
         return cycles
 

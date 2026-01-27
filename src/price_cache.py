@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
-from models import SLOTS_PER_DAY
+from .models import SLOTS_PER_DAY
 
 logger = logging.getLogger(__name__)
 

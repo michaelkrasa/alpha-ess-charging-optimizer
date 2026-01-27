@@ -3,7 +3,7 @@
 import logging
 from typing import Dict, List, Tuple, Optional
 
-from models import PriceWindow, SLOTS_PER_DAY
+from .models import PriceWindow, SLOTS_PER_DAY
 
 logger = logging.getLogger(__name__)
 

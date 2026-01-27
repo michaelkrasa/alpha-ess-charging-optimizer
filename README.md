@@ -85,10 +85,10 @@ max_soc: 100             # Charge target %
 
 ```bash
 # Default: Single optimization for today (run at midnight)
-uv run optimizer.py
+uv run python -m src.optimizer
 
 # Dry run for a specific day (no API changes)
-uv run optimizer.py --date 15
+uv run python -m src.optimizer --date 15
 ```
 
 ---
@@ -206,19 +206,26 @@ aws events put-rule \
 ## 📁 Project Structure
 
 ```
-├── optimizer.py        # Main optimizer orchestration
-├── models.py           # Data models (PriceWindow, ArbitrageCycle, etc.)
-├── price_analyzer.py   # Price analysis and valley/peak detection
-├── battery_manager.py  # Battery state calculations
-├── ess_client.py       # AlphaESS API client
-└── price_cache.py      # Price caching logic
-├── config.py           # Configuration loader
-├── config.yaml         # Optimization settings
-├── lambda_handler.py   # AWS Lambda entry point
-├── Dockerfile          # Lambda container (arm64)
-├── deploy-lambda.sh    # One-command AWS deployment
-├── .env.example        # Environment template
-└── test_ess.py         # Test suite
+├── src/                    # Core application modules
+│   ├── optimizer.py        # Main optimizer orchestration
+│   ├── models.py           # Data models (PriceWindow, ArbitrageCycle, etc.)
+│   ├── price_analyzer.py   # Price analysis and valley/peak detection
+│   ├── battery_manager.py  # Battery state calculations
+│   ├── ess_client.py       # AlphaESS API client
+│   └── price_cache.py      # Price caching logic
+├── utils/                  # Utility scripts
+│   └── fetch_december_prices.py  # Price data fetcher for testing
+├── tests/                  # Test suite
+│   ├── test_ess.py         # Main test suite
+│   ├── test_december_2025.py  # December 2025 price data tests
+│   └── test_data/          # Test price data files
+├── config.py               # Configuration loader
+├── config.yaml             # Optimization settings
+├── lambda_handler.py       # AWS Lambda entry point
+├── Dockerfile              # Lambda container (arm64)
+├── deploy-lambda.sh        # One-command AWS deployment
+├── .env.example            # Environment template
+└── pyproject.toml          # Project dependencies (UV)
 ```
 
 ---
@@ -226,7 +233,14 @@ aws events put-rule \
 ## 🧪 Testing
 
 ```bash
-uv run pytest test_ess.py -v
+# Run all tests
+uv run pytest tests/ -v
+
+# Run specific test file
+uv run pytest tests/test_ess.py -v
+
+# Run December 2025 data tests
+uv run pytest tests/test_december_2025.py -v
 ```
 
 ---
@@ -237,7 +251,7 @@ uv run pytest test_ess.py -v
 
 ```cron
 # Run daily at 00:00 (midnight + 1 minute)
-1 0 * * * cd /path/to/AlphaESS-charging-optimizer && uv run optimizer.py
+1 0 * * * cd /path/to/AlphaESS-charging-optimizer && uv run python -m src.optimizer
 ```
 
 ### AWS Lambda + EventBridge
