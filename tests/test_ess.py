@@ -24,7 +24,7 @@ def optimizer():
             'app_id': 'test_id',
             'app_secret': 'test_secret',
             'serial_number': 'TEST123',
-            'charge_to_full': 3.0,
+            'charge_rate_kw': 5.0,
             'price_multiplier': 1.2,
             'avg_overnight_load_kw': 0.5,
             'avg_day_load_kw': 1.8,
@@ -52,7 +52,8 @@ def optimizer():
 
         opt = ESSOptimizer()
         # Set battery capacity (normally fetched from API)
-        opt.battery_capacity_kwh = 15.5
+        # 15.0 kWh with 5 kW charge rate = 3 hour charge time
+        opt.battery_capacity_kwh = 15.0
         return opt
 
 
@@ -65,9 +66,10 @@ class TestChargingCalculations:
         assert slots == 12  # 3 hours * 4 slots/hour
 
     def test_calculate_charging_slots_from_30_percent(self, optimizer):
-        """Test slot calculation from 30% - should be ~8 slots (2.1h)"""
+        """Test slot calculation from 30% - should be 10 slots (2.5h rounded up)"""
         slots = optimizer.calculate_charging_slots_needed(30.0)
-        assert slots == 8  # 2.1 hours * 4 = 8.4, rounded to 8
+        # 70% gap = 2.1 hours = 8.4 slots → ceiling to nearest half hour = 10 slots
+        assert slots == 10
 
     def test_calculate_charging_slots_from_50_percent(self, optimizer):
         """Test slot calculation from 50% - should be 6 slots (1.5h)"""
@@ -454,9 +456,10 @@ class TestSocEstimation:
         # Test with 20% current SOC
         current_soc = 20.0
 
-        # Create a cycle that would previously assume 100% SOC
-        valleys = [PriceWindow(0, 8, 80, 'valley')]  # Early morning valley
-        peaks = [PriceWindow(64, 72, 140, 'peak')]   # Afternoon peak
+        # Create a cycle with valley large enough for full charge
+        # With 15 kWh battery and 5 kW charge rate, need 3 hours = 12 slots
+        valleys = [PriceWindow(0, 12, 80, 'valley')]  # Early morning valley (3 hours)
+        peaks = [PriceWindow(64, 72, 140, 'peak')]    # Afternoon peak
 
         cycles = optimizer.find_arbitrage_cycles(valleys, peaks, current_soc, slot_prices)
 

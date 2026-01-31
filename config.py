@@ -34,7 +34,7 @@ class Config:
         return data
 
     def validate_config(self) -> None:
-        required_keys = ["app_id", "app_secret", "serial_number", "price_multiplier", "charge_to_full"]
+        required_keys = ["app_id", "app_secret", "serial_number", "price_multiplier", "charge_rate_kw"]
         for key in required_keys:
             if key not in self.data:
                 raise ValueError(f"{key} not found in config")

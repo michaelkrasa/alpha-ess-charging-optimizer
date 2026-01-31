@@ -137,7 +137,7 @@ from config import Config  # config.py is in root, not in src/
 - `ECR_REPO`: ECR repository name (Lambda deployment)
 
 ### Configuration File (config.yaml)
-- `charge_to_full`: Hours to charge 0→100%
+- `charge_rate_kw`: Battery charge rate in kW
 - `price_multiplier`: Threshold factor vs daily mean
 - `min_soc`: Minimum discharge SOC %
 - `max_soc`: Target charge SOC %

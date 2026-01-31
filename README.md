@@ -75,7 +75,7 @@ SERIAL_NUMBER=your_system_serial
 Tune behavior in `config.yaml`:
 
 ```yaml
-charge_to_full: 3        # Hours to charge 0→100%
+charge_rate_kw: 5        # Battery charge rate in kW
 price_multiplier: 1.2    # Valley/peak threshold vs daily mean
 min_soc: 10              # Don't discharge below this %
 max_soc: 100             # Charge target %
@@ -193,7 +193,7 @@ aws events put-rule \
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `charge_to_full` | 3 | Hours to charge 0→100% |
+| `charge_rate_kw` | 5 | Battery charge rate in kW |
 | `price_multiplier` | 1.2 | Threshold factor vs daily mean |
 | `min_soc` | 10 | Minimum discharge SOC % |
 | `max_soc` | 100 | Target charge SOC % |

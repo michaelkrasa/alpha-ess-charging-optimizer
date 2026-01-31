@@ -1,4 +1,4 @@
-charge_to_full: 3  # how many hours to charge from empty to full
+charge_rate_kw: 5  # battery charge rate in kW
 price_multiplier: 1.18  # only charge if price is lower by this multiplier than mean price of the day
 
 # Timezone configuration

@@ -9,6 +9,7 @@ Dynamically detects valleys and peaks from price data - no hardcoded times.
 import argparse
 import asyncio
 import logging
+import math
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -70,7 +71,7 @@ class ESSOptimizer:
         )
 
         self.battery_manager = BatteryManager(
-            charge_hours=float(self.config['charge_to_full']),
+            charge_rate_kw=float(self.config['charge_rate_kw']),
             avg_day_load_kw=float(self.config.get('avg_day_load_kw', 1.8)),
             min_soc=int(self.config.get('min_soc', 10)),
             max_soc=int(self.config.get('max_soc', 100))
@@ -89,7 +90,11 @@ class ESSOptimizer:
         self.MIN_WINDOW_SLOTS = int(self.config.get('min_window_slots', 4))
         self.DISCHARGE_EXTENSION_THRESHOLD = float(self.config.get('discharge_extension_threshold', 0.85))
         self.price_multiplier = float(self.config['price_multiplier'])
-        self.charge_hours = float(self.config['charge_to_full'])
+
+    @property
+    def charge_hours(self) -> float:
+        """Backward compatibility: delegate to battery_manager"""
+        return self.battery_manager.charge_hours
 
         logger.info(f"ESS Optimizer initialized (timezone: {self.timezone})")
 
@@ -187,18 +192,26 @@ class ESSOptimizer:
     def _find_profitable_discharge_window(self, charge_price: float, slot_prices: Dict[int, float], after_slot: int = 0, exclude_slots=None):
         return self.price_analyzer.find_profitable_discharge_window(charge_price, slot_prices, after_slot, exclude_slots)
 
-    def _create_charge_window(self, valley: PriceWindow, slot_prices: Dict[int, float], slots_needed: Optional[int] = None, is_overnight: bool = False) -> PriceWindow:
+    def _create_charge_window(self, valley: PriceWindow, slot_prices: Dict[int, float], slots_needed: Optional[int] = None, is_overnight: bool = False, current_soc: float = 0.0) -> PriceWindow:
         """Create optimal charge window within valley (exposed for testing)
         
-        For overnight charging, extends valley if needed to get full charge_to_full hours.
+        For overnight charging, extends valley if needed to get full charge time.
+        Validates that the window is sufficient for charging to full.
+        
+        Args:
+            valley: The price valley to create a charge window within
+            slot_prices: Dict mapping slot index to price
+            slots_needed: Override for slots needed (if None, calculated for full charge)
+            is_overnight: Whether this is overnight charging
+            current_soc: Current battery SOC for validation
         """
         if slots_needed is None:
-            slots_needed = int(self.battery_manager.charge_hours * 4)
+            # Calculate slots needed for full charge, rounded up to nearest half hour
+            slots_needed = self.battery_manager.calculate_full_charge_slots()
 
         valley_slots = valley.end_slot - valley.start_slot
 
         # For overnight charging, prefer to use the full available valley
-        # Don't require extending to get full charge time - charge what's available
         if is_overnight:
             # Use all available slots in the valley, but cap at what we need for full charge
             actual_slots = min(valley_slots, slots_needed)
@@ -208,7 +221,16 @@ class ESSOptimizer:
             actual_slots = max(4, actual_slots)
 
         start, end, avg = self.price_analyzer.find_cheapest_window_in_valley(valley, actual_slots, slot_prices)
-        return PriceWindow(start, end, avg, 'valley')
+        charge_window = PriceWindow(start, end, avg, 'valley')
+        
+        # Validate window is sufficient for full charge
+        window_slots = charge_window.end_slot - charge_window.start_slot
+        if not self.battery_manager.is_charge_window_sufficient(window_slots, current_soc, self.battery_manager.MAX_SOC):
+            needed = self.battery_manager.calculate_charging_slots_needed(current_soc, self.battery_manager.MAX_SOC)
+            logger.warning(f"Charge window {charge_window} has {window_slots} slots but needs {needed} slots "
+                          f"to charge from {current_soc:.0f}% to {self.battery_manager.MAX_SOC}%")
+        
+        return charge_window
 
     def _extend_valley_for_overnight_charging(self, valley: PriceWindow, slot_prices: Dict[int, float], slots_needed: int) -> Optional[PriceWindow]:
         """Extend overnight valley to get enough slots for full charging"""
@@ -389,7 +411,7 @@ class ESSOptimizer:
 
             # Create charge window now that discharge is known
             if is_overnight:
-                optimal_charge_window = self._create_charge_window(valley, slot_prices, is_overnight=True)
+                optimal_charge_window = self._create_charge_window(valley, slot_prices, is_overnight=True, current_soc=estimated_soc)
                 logger.info(f"Full valley charging (SOC={estimated_soc:.0f}%, overnight={is_overnight})")
             else:
                 # Size daytime charge to what can be fully discharged later
@@ -401,22 +423,42 @@ class ESSOptimizer:
                     allowed_soc_gain = (discharge_energy_kwh / capacity) * 100.0
                     soc_headroom = max(0.0, self.battery_manager.MAX_SOC - estimated_soc)
                     soc_gain = max(0.0, min(allowed_soc_gain, soc_headroom))
-                    slots_needed = int(round((soc_gain / 100.0) * self.battery_manager.charge_hours * 4))
+                    slots_raw = (soc_gain / 100.0) * self.battery_manager.charge_hours * 4
+                    # Round up to nearest half hour (2 slots = 30 min)
+                    slots_needed = math.ceil(slots_raw / 2) * 2
                 else:
                     # Fallback: proportionally size by discharge duration vs full discharge time
                     full_discharge_slots = self.battery_manager.calculate_full_discharge_slots()
                     ratio = (extended_discharge.duration_hours * 4) / full_discharge_slots if full_discharge_slots > 0 else 0
-                    slots_needed = int(round(ratio * self.battery_manager.charge_hours * 4))
+                    slots_raw = ratio * self.battery_manager.charge_hours * 4
+                    # Round up to nearest half hour (2 slots = 30 min)
+                    slots_needed = math.ceil(slots_raw / 2) * 2
                 slots_needed = max(self.MIN_WINDOW_SLOTS, min(slots_needed, valley_slots))
                 if slots_needed <= 0:
                     continue
-                optimal_charge_window = self._create_charge_window(valley, slot_prices, slots_needed, is_overnight=False)
+                optimal_charge_window = self._create_charge_window(valley, slot_prices, slots_needed, is_overnight=False, current_soc=estimated_soc)
 
             # Check for overlap with already used charging slots
             charge_slots = set(range(optimal_charge_window.start_slot, optimal_charge_window.end_slot))
             if charge_slots & used_charge_slots:
                 overlap_count = len(charge_slots & used_charge_slots)
                 logger.info(f"Skipping cycle: charge window {optimal_charge_window} overlaps {overlap_count} slots with existing charging")
+                continue
+
+            # Validate that charge window is long enough for meaningful charging
+            # Overnight: need full charge time (capacity / charge_rate)
+            # Daytime: minimum 4 slots (1 hour) for partial charging
+            window_slots = optimal_charge_window.end_slot - optimal_charge_window.start_slot
+            if is_overnight:
+                # For overnight, require enough time to fully charge the battery
+                min_required_slots = self.battery_manager.calculate_full_charge_slots()
+            else:
+                # For daytime, allow shorter windows for partial arbitrage
+                min_required_slots = 4  # 1 hour minimum
+            if window_slots < min_required_slots:
+                logger.info(f"Skipping cycle: charge window {optimal_charge_window} has only {window_slots} slots "
+                           f"({optimal_charge_window.duration_hours:.2f}h), need at least {min_required_slots} slots "
+                           f"({min_required_slots / 4:.1f}h) for {'overnight' if is_overnight else 'daytime'} charging")
                 continue
 
             # Validate that discharge window is long enough for day cycles (not overnight)
@@ -468,10 +510,14 @@ class ESSOptimizer:
                 if overlap > 0:
                     logger.info(f"Skipping additional discharge: overlaps {overlap} slots with existing")
                 else:
-                    spread = additional.avg_price - last_cycle.charge_window.avg_price
-                    if spread > 0:
-                        cycles.append(ArbitrageCycle(last_cycle.charge_window, additional, spread))
-                        logger.info(f"Found additional discharge: {cycles[-1]}")
+                    # Validate discharge window is long enough for the energy that would be charged
+                    if not self._validate_discharge_window(last_cycle.charge_window, additional, current_soc):
+                        logger.info(f"Skipping additional discharge: window too short for energy charged")
+                    else:
+                        spread = additional.avg_price - last_cycle.charge_window.avg_price
+                        if spread > 0:
+                            cycles.append(ArbitrageCycle(last_cycle.charge_window, additional, spread))
+                            logger.info(f"Found additional discharge: {cycles[-1]}")
 
         return cycles
 
