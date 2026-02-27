@@ -1,6 +1,7 @@
 """AlphaESS API client for battery data and schedule management"""
 
 import logging
+from datetime import date
 from typing import Optional, Tuple
 
 from alphaess.alphaess import alphaess
@@ -49,6 +50,26 @@ class ESSClient:
             return None
         except Exception as e:
             logger.error(f"Failed to get battery capacity: {e}")
+            return None
+
+    async def get_one_day_power(self, query_date: date | str | None = None) -> Optional[list]:
+        """Get 15-minute power data for a specific day."""
+        try:
+            if isinstance(query_date, date):
+                query_date = query_date.strftime("%Y-%m-%d")
+            return await self.client.getOneDayPowerBySn(self.serial_number, query_date)
+        except Exception as e:
+            logger.error(f"Failed to get one day power data: {e}")
+            return None
+
+    async def get_one_day_energy(self, query_date: date | str | None = None) -> Optional[list]:
+        """Get daily energy data for a specific day."""
+        try:
+            if isinstance(query_date, date):
+                query_date = query_date.strftime("%Y-%m-%d")
+            return await self.client.getOneDateEnergyBySn(self.serial_number, query_date)
+        except Exception as e:
+            logger.error(f"Failed to get one day energy data: {e}")
             return None
 
     def _format_periods(self, period1: Optional[Tuple[str, str]], period2: Optional[Tuple[str, str]]) -> str:

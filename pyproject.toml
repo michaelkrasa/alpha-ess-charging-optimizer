@@ -1,6 +1,6 @@
 [project]
 name = "alphaess-charging-optimizer"
-version = "1.0.0"
+version = "1.1.0"
 description = "Optimize AlphaESS battery charging/discharging based on day-ahead electricity prices"
 readme = "README.md"
 requires-python = ">=3.12"

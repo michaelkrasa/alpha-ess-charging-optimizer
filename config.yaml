@@ -4,6 +4,10 @@ price_multiplier: 1.18  # only charge if price is lower by this multiplier than 
 # Timezone configuration
 timezone: Europe/Prague  # Timezone for determining what "today" means
 
+# Solar forecast integration (Open-Meteo + AlphaESS)
+solar_forecast_enabled: true
+solar_config_path: solar_config.yaml
+
 # Battery parameters
 avg_day_load_kw: 1.8        # Average household load during peaks in kW
 min_soc: 10                 # Minimum SOC % (don't discharge below this)
@@ -20,3 +24,4 @@ afternoon_start_hour: 10     # Afternoon charging starts at this hour (10-18)
 afternoon_end_hour: 18       # Afternoon charging ends at this hour
 min_discharge_fraction: 0.5  # Minimum fraction of full discharge time required (0.5 = 50%)
 min_discharge_hours: 1.5     # Minimum discharge duration in hours (overrides fraction if larger)
+daytime_charge_factor: 0.75  # Conservative multiplier for non-overnight charging to avoid overcharging midday

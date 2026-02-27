@@ -1,0 +1,50 @@
+# Open-Meteo parameters for GTI + temperature retrieval
+# Adjust latitude/longitude, tilt, and azimuth to match your PV array
+
+latitude: 49.9681
+longitude: 14.5135
+
+# Panel orientation (degrees)
+# tilt: 0 = horizontal, 90 = vertical
+# azimuth: 0 = South, -90 = East, 90 = West
+# (Open-Meteo uses 0 = South, -90 = East, 90 = West)
+
+tilt: 15
+azimuth: -30
+
+# Response timezone for timestamps
+# Use the same timezone as the optimizer
+
+timezone: Europe/Prague
+
+# Open-Meteo variables
+# See https://open-meteo.com/en/docs for other options
+
+gti_variable: global_tilted_irradiance
+temperature_variable: temperature_2m
+
+# Data granularity: "minutely_15" or "hourly"
+# "minutely_15" aligns to 15-minute PV intervals
+
+granularity: minutely_15
+
+# Base URL (forecast endpoint supports recent history + forecast)
+
+open_meteo_base_url: https://api.open-meteo.com/v1/forecast
+
+# PV forecast model (simple GTI → kW estimate)
+pv_forecast_enabled: true
+pv_capacity_kw: null       # Not required when adaptive scaling is enabled
+pv_inverter_kw: null       # Optional AC inverter limit (kW)
+pv_derate: 0.85
+pv_temp_coeff_per_c: -0.004  # Power temp coefficient (per °C)
+pv_temp_ref_c: 25.0
+pv_noct_c: 45.0
+pv_forecast_conservative_factor: 0.7  # Multiply forecast energy to be conservative
+pv_scale_adaptive: true
+pv_scale_days: 89
+pv_scale_min_gti: 200.0
+pv_scale_min_samples: 200
+pv_scale_cache_path: data/pv_scale_cache.json
+pv_scale_refresh_hours: 24
+pv_scale_max_workers: 3

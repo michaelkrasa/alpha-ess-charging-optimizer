@@ -8,10 +8,12 @@ Dynamically detects valleys and peaks from price data - no hardcoded times.
 
 import argparse
 import asyncio
+import json
 import logging
 import math
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -23,6 +25,13 @@ from .ess_client import ESSClient
 from .models import ArbitrageCycle, OptimizationPlan, PriceWindow, SLOTS_PER_DAY
 from .price_analyzer import PriceAnalyzer
 from .price_cache import PriceCache
+from .solar_data import (
+    SolarConfig,
+    SolarForecaster,
+    aggregate_power_series,
+    expand_hourly_points_to_quarters,
+    power_series_to_slot_kwh,
+)
 
 # Configure logging - Lambda uses CloudWatch via stdout (no timestamps), local uses file + stdout (with timestamps)
 if not logging.getLogger().handlers:
@@ -86,9 +95,26 @@ class ESSOptimizer:
         self.price_fetcher = PriceFetcher()
         self.price_cache = PriceCache(self.timezone)
 
+        # Optional solar forecast integration
+        self.solar_forecaster = None
+        self.solar_config = None
+        if self.config.get('solar_forecast_enabled', False):
+            solar_config_path = self.config.get('solar_config_path', 'solar_config.yaml')
+            if os.path.exists(solar_config_path):
+                try:
+                    self.solar_config = SolarConfig.from_yaml(solar_config_path)
+                    self.solar_forecaster = SolarForecaster(self.solar_config)
+                    if self.solar_config.timezone != str(self.timezone):
+                        logger.info(
+                            f"Solar forecast timezone {self.solar_config.timezone} differs from optimizer timezone {self.timezone}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to load solar config from {solar_config_path}: {e}")
+
         # Store config values for convenience (backward compatibility)
         self.MIN_WINDOW_SLOTS = int(self.config.get('min_window_slots', 4))
         self.DISCHARGE_EXTENSION_THRESHOLD = float(self.config.get('discharge_extension_threshold', 0.85))
+        self.DAYTIME_CHARGE_FACTOR = float(self.config.get('daytime_charge_factor', 0.75))
         self.price_multiplier = float(self.config['price_multiplier'])
 
     @property
@@ -183,6 +209,198 @@ class ESSOptimizer:
     # Expose internal methods for testing
     def _estimate_consumption_soc_drain(self, hours: float) -> float:
         return self.battery_manager.estimate_consumption_soc_drain(hours)
+
+    def _pv_kwh_between(
+        self,
+        pv_forecast_kwh_by_slot: Optional[Dict[int, float]],
+        start_slot: int,
+        end_slot: int,
+    ) -> float:
+        if not pv_forecast_kwh_by_slot:
+            return 0.0
+        start = max(0, start_slot)
+        end = min(SLOTS_PER_DAY, end_slot)
+        if end <= start:
+            return 0.0
+        return sum(pv_forecast_kwh_by_slot.get(slot, 0.0) for slot in range(start, end))
+
+    def _load_pv_scale_cache(self) -> Optional[float]:
+        if not self.solar_config or not self.solar_config.pv_scale_cache_path:
+            return None
+        cache_path = Path(self.solar_config.pv_scale_cache_path)
+        if not cache_path.exists():
+            return None
+        try:
+            payload = json.loads(cache_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        effective_capacity = payload.get("effective_capacity_kw")
+        computed_at = payload.get("computed_at")
+        if effective_capacity is None or computed_at is None:
+            return None
+
+        try:
+            computed_dt = datetime.fromisoformat(computed_at)
+        except ValueError:
+            return None
+
+        tz = ZoneInfo(self.solar_config.timezone)
+        if computed_dt.tzinfo is None:
+            computed_dt = computed_dt.replace(tzinfo=tz)
+
+        max_age_hours = int(self.solar_config.pv_scale_refresh_hours or 24)
+        age = datetime.now(tz) - computed_dt
+        if age.total_seconds() > max_age_hours * 3600:
+            return None
+
+        return float(effective_capacity)
+
+    def _save_pv_scale_cache(
+        self,
+        *,
+        effective_capacity_kw: float,
+        sample_count: int,
+        start_date: date,
+        end_date: date,
+    ) -> None:
+        if not self.solar_config or not self.solar_config.pv_scale_cache_path:
+            return
+        cache_path = Path(self.solar_config.pv_scale_cache_path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "computed_at": datetime.now(ZoneInfo(self.solar_config.timezone)).isoformat(),
+            "effective_capacity_kw": effective_capacity_kw,
+            "sample_count": sample_count,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "min_gti": self.solar_config.pv_scale_min_gti,
+            "days": self.solar_config.pv_scale_days,
+        }
+        cache_path.write_text(json.dumps(payload, indent=2))
+
+    async def _compute_adaptive_capacity_kw(self) -> Optional[float]:
+        if not self.solar_forecaster or not self.solar_config:
+            return None
+
+        cached = self._load_pv_scale_cache()
+        if cached is not None:
+            return cached
+
+        days = int(self.solar_config.pv_scale_days or 0)
+        if days <= 0:
+            return None
+
+        tz = ZoneInfo(self.solar_config.timezone)
+        today = datetime.now(tz).date()
+        end_date = today - timedelta(days=1)
+        start_date = end_date - timedelta(days=days - 1)
+        if end_date < start_date:
+            return None
+
+        try:
+            weather_points = await self.solar_forecaster.client.fetch_gti_temperature(start_date, end_date)
+        except Exception as e:
+            logger.warning(f"Failed to fetch Open-Meteo history: {e}")
+            return None
+
+        weather_index: Dict[datetime, tuple[float, float]] = {
+            point.timestamp: (point.gti_w_per_m2, point.temperature_c) for point in weather_points
+        }
+
+        semaphore = asyncio.Semaphore(int(self.solar_config.pv_scale_max_workers or 3))
+
+        async def fetch_day(target: date):
+            async with semaphore:
+                raw = await self.ess_client.get_one_day_power(target)
+            if not raw:
+                return []
+            return aggregate_power_series(raw, timezone=tz)
+
+        tasks = [fetch_day(start_date + timedelta(days=i)) for i in range(days)]
+        results = await asyncio.gather(*tasks)
+
+        min_gti = float(self.solar_config.pv_scale_min_gti or 0.0)
+        min_samples = int(self.solar_config.pv_scale_min_samples or 0)
+
+        base_values: list[float] = []
+        actual_values: list[float] = []
+
+        for points in results:
+            for point in points:
+                weather = weather_index.get(point.timestamp)
+                if not weather:
+                    continue
+                gti, temp_c = weather
+                if gti < min_gti:
+                    continue
+                if self.solar_config.pv_inverter_kw and point.pv_power_kw >= self.solar_config.pv_inverter_kw * 0.98:
+                    continue
+                base = self.solar_forecaster.estimate_pv_power_kw(
+                    gti,
+                    temp_c,
+                    capacity_kw_override=1.0,
+                    derate_override=1.0,
+                )
+                if base <= 0:
+                    continue
+                base_values.append(base)
+                actual_values.append(point.pv_power_kw)
+
+        if len(actual_values) < min_samples:
+            logger.warning(
+                f"Not enough PV samples for adaptive scaling: {len(actual_values)} < {min_samples}"
+            )
+            return None
+
+        numerator = sum(a * b for a, b in zip(actual_values, base_values))
+        denominator = sum(b ** 2 for b in base_values)
+        if denominator <= 0:
+            return None
+
+        effective_capacity = numerator / denominator
+        self._save_pv_scale_cache(
+            effective_capacity_kw=effective_capacity,
+            sample_count=len(actual_values),
+            start_date=start_date,
+            end_date=end_date,
+        )
+        logger.info(
+            f"Adaptive PV scale: effective_capacity={effective_capacity:.2f} kW "
+            f"(samples={len(actual_values)}, window={start_date}→{end_date})"
+        )
+        return effective_capacity
+
+    async def _get_pv_forecast_kwh_by_slot(self, target_date: date) -> Optional[Dict[int, float]]:
+        if not self.solar_forecaster or not self.solar_config:
+            return None
+        try:
+            capacity_override = None
+            derate_override = None
+            if self.solar_config.pv_scale_adaptive:
+                capacity_override = await self._compute_adaptive_capacity_kw()
+                if capacity_override:
+                    derate_override = 1.0
+            points = await self.solar_forecaster.forecast_power(
+                target_date,
+                target_date,
+                capacity_kw_override=capacity_override,
+                derate_override=derate_override,
+            )
+            if not points:
+                return None
+            granularity = self.solar_config.granularity or "minutely_15"
+            if granularity == "hourly":
+                points = expand_hourly_points_to_quarters(points)
+            return power_series_to_slot_kwh(
+                points,
+                target_date=target_date,
+                slot_minutes=15,
+                timezone=self.solar_config.timezone,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch PV forecast: {e}")
+            return None
 
     def _extend_discharge_window(self, peak: PriceWindow, charge_price: float, slot_prices, max_end_slot=SLOTS_PER_DAY, exclude_slots=None, aggressive_eod=False) -> PriceWindow:
         return self.price_analyzer.extend_discharge_window(
@@ -300,11 +518,19 @@ class ESSOptimizer:
             logger.error(f"Failed to get prices: {e}")
             return None
 
-    def find_arbitrage_cycles(self, valleys: List[PriceWindow], peaks: List[PriceWindow],
-                              current_soc: float, slot_prices: Dict[int, float]
-                              ) -> List[ArbitrageCycle]:
+    def find_arbitrage_cycles(
+        self,
+        valleys: List[PriceWindow],
+        peaks: List[PriceWindow],
+        current_soc: float,
+        slot_prices: Dict[int, float],
+        pv_forecast_kwh_by_slot: Optional[Dict[int, float]] = None,
+    ) -> List[ArbitrageCycle]:
         """Match valleys with discharge opportunities to create arbitrage cycles"""
         cycles = []
+        pv_factor = 1.0
+        if self.solar_config and self.solar_config.pv_forecast_conservative_factor is not None:
+            pv_factor = float(self.solar_config.pv_forecast_conservative_factor)
         # For optimal arbitrage, ensure one early morning and one afternoon cycle
         early_morning_end = int(self.config.get('early_morning_end_hour', 6))
         afternoon_start = int(self.config.get('afternoon_start_hour', 10))
@@ -409,10 +635,32 @@ class ESSOptimizer:
                 logger.info(f"Skipping cycle: discharge {extended_discharge} overlaps {overlap} slots with existing")
                 continue
 
+            pv_credit_kwh = self._pv_kwh_between(
+                pv_forecast_kwh_by_slot,
+                valley.end_slot,
+                extended_discharge.end_slot,
+            ) * pv_factor
+
             # Create charge window now that discharge is known
             if is_overnight:
-                optimal_charge_window = self._create_charge_window(valley, slot_prices, is_overnight=True, current_soc=estimated_soc)
-                logger.info(f"Full valley charging (SOC={estimated_soc:.0f}%, overnight={is_overnight})")
+                slots_needed = None
+                if self.battery_manager.battery_capacity_kwh and pv_credit_kwh > 0:
+                    capacity = self.battery_manager.battery_capacity_kwh
+                    pv_soc_gain = (pv_credit_kwh / capacity) * 100.0
+                    target_soc = max(self.battery_manager.MIN_SOC, self.battery_manager.MAX_SOC - pv_soc_gain)
+                    if target_soc <= estimated_soc:
+                        logger.info("Skipping overnight charge: PV forecast covers required SOC")
+                        continue
+                    slots_needed = self.battery_manager.calculate_charging_slots_needed(estimated_soc, target_soc)
+                    slots_needed = max(self.MIN_WINDOW_SLOTS, slots_needed)
+                optimal_charge_window = self._create_charge_window(
+                    valley,
+                    slot_prices,
+                    slots_needed=slots_needed,
+                    is_overnight=True,
+                    current_soc=estimated_soc,
+                )
+                logger.info(f"Overnight charging (SOC={estimated_soc:.0f}%, pv_credit={pv_credit_kwh:.1f} kWh)")
             else:
                 # Size daytime charge to what can be fully discharged later
                 valley_slots = valley.end_slot - valley.start_slot
@@ -420,7 +668,12 @@ class ESSOptimizer:
                 if self.battery_manager.battery_capacity_kwh:
                     capacity = self.battery_manager.battery_capacity_kwh
                     discharge_energy_kwh = extended_discharge.duration_hours * self.battery_manager.AVG_DAY_LOAD_KW
-                    allowed_soc_gain = (discharge_energy_kwh / capacity) * 100.0
+                    if pv_credit_kwh > 0:
+                        discharge_energy_kwh = max(0.0, discharge_energy_kwh - pv_credit_kwh)
+                        if discharge_energy_kwh <= 0:
+                            logger.info("Skipping daytime charge: PV forecast covers discharge energy")
+                            continue
+                    allowed_soc_gain = (discharge_energy_kwh / capacity) * 100.0 * self.DAYTIME_CHARGE_FACTOR
                     soc_headroom = max(0.0, self.battery_manager.MAX_SOC - estimated_soc)
                     soc_gain = max(0.0, min(allowed_soc_gain, soc_headroom))
                     slots_raw = (soc_gain / 100.0) * self.battery_manager.charge_hours * 4
@@ -429,8 +682,11 @@ class ESSOptimizer:
                 else:
                     # Fallback: proportionally size by discharge duration vs full discharge time
                     full_discharge_slots = self.battery_manager.calculate_full_discharge_slots()
-                    ratio = (extended_discharge.duration_hours * 4) / full_discharge_slots if full_discharge_slots > 0 else 0
-                    slots_raw = ratio * self.battery_manager.charge_hours * 4
+                    discharge_hours = extended_discharge.duration_hours
+                    if pv_credit_kwh > 0 and self.battery_manager.AVG_DAY_LOAD_KW > 0:
+                        discharge_hours = max(0.0, discharge_hours - (pv_credit_kwh / self.battery_manager.AVG_DAY_LOAD_KW))
+                    ratio = (discharge_hours * 4) / full_discharge_slots if full_discharge_slots > 0 else 0
+                    slots_raw = ratio * self.battery_manager.charge_hours * 4 * self.DAYTIME_CHARGE_FACTOR
                     # Round up to nearest half hour (2 slots = 30 min)
                     slots_needed = math.ceil(slots_raw / 2) * 2
                 slots_needed = max(self.MIN_WINDOW_SLOTS, min(slots_needed, valley_slots))
@@ -521,7 +777,12 @@ class ESSOptimizer:
 
         return cycles
 
-    def analyze_day(self, slot_prices: Dict[int, float], current_soc: float) -> OptimizationPlan:
+    def analyze_day(
+        self,
+        slot_prices: Dict[int, float],
+        current_soc: float,
+        pv_forecast_kwh_by_slot: Optional[Dict[int, float]] = None,
+    ) -> OptimizationPlan:
         """Analyze day's prices and create optimization plan"""
         prices = [slot_prices[i] for i in range(SLOTS_PER_DAY)]
 
@@ -533,7 +794,13 @@ class ESSOptimizer:
         )
 
         plan.valleys, plan.peaks = self.price_analyzer.detect_valleys_and_peaks(slot_prices)
-        plan.cycles = self.find_arbitrage_cycles(plan.valleys, plan.peaks, current_soc, slot_prices)
+        plan.cycles = self.find_arbitrage_cycles(
+            plan.valleys,
+            plan.peaks,
+            current_soc,
+            slot_prices,
+            pv_forecast_kwh_by_slot=pv_forecast_kwh_by_slot,
+        )
 
         # Add discharge windows from cycles to peaks if not already present
         # (cycles may use dynamically found discharge windows not detected as peaks)
@@ -557,10 +824,18 @@ class ESSOptimizer:
         logger.info(f"🔋 Dynamic optimization for {target_date.date()}" + (" [DRY RUN]" if dry_run else ""))
         logger.info(f"{'=' * 50}")
 
-        # Fetch battery SOC and prices in parallel
+        # Fetch battery SOC, prices, and optional PV forecast in parallel
         soc_task = self.get_battery_soc()
         prices_task = self.get_prices_for_day(target_date)
-        current_soc, slot_prices = await asyncio.gather(soc_task, prices_task)
+        pv_task = self._get_pv_forecast_kwh_by_slot(target_date.date()) if self.solar_forecaster else None
+
+        if pv_task:
+            current_soc, slot_prices, pv_forecast_kwh_by_slot = await asyncio.gather(
+                soc_task, prices_task, pv_task
+            )
+        else:
+            current_soc, slot_prices = await asyncio.gather(soc_task, prices_task)
+            pv_forecast_kwh_by_slot = None
 
         if current_soc is None:
             logger.error("Cannot proceed without battery SOC")
@@ -571,7 +846,7 @@ class ESSOptimizer:
             return False
 
         # Analyze day dynamically
-        plan = self.analyze_day(slot_prices, current_soc)
+        plan = self.analyze_day(slot_prices, current_soc, pv_forecast_kwh_by_slot=pv_forecast_kwh_by_slot)
 
         logger.info(f"Daily stats: mean={plan.daily_mean:.0f}, min={plan.daily_min:.0f}, max={plan.daily_max:.0f}")
 
@@ -626,6 +901,8 @@ class ESSOptimizer:
             logger.info("✓ Optimization completed" if success else "✗ Optimization failed")
         finally:
             await self.ess_client.close()
+            if self.solar_forecaster:
+                await self.solar_forecaster.close()
 
     @property
     def client(self):
