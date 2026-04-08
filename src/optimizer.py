@@ -52,6 +52,7 @@ if not logging.getLogger().handlers:
         logger.addHandler(handler)
     else:
         # Local development: Use timestamps
+        Path("logs").mkdir(exist_ok=True)
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -59,6 +60,21 @@ if not logging.getLogger().handlers:
         )
 
 logger = logging.getLogger(__name__)
+
+
+def parse_target_date_arg(value: str, timezone: ZoneInfo, now: Optional[datetime] = None) -> datetime:
+    """Parse a CLI date argument as either day-of-month or ISO date."""
+    if now is None:
+        now = datetime.now(ZoneInfo('UTC')).astimezone(timezone)
+
+    if value.isdigit():
+        day = int(value)
+        if not (1 <= day <= 31):
+            raise ValueError("day of month must be between 1 and 31")
+        return datetime(now.year, now.month, day, tzinfo=timezone)
+
+    parsed_date = date.fromisoformat(value)
+    return datetime(parsed_date.year, parsed_date.month, parsed_date.day, tzinfo=timezone)
 
 
 class ESSOptimizer:
@@ -916,9 +932,8 @@ async def main():
     )
     parser.add_argument(
         "--date",
-        type=int,
-        metavar="DAY",
-        help="Day of month (1-31). Optimizes for that day in the current month."
+        metavar="DAY|YYYY-MM-DD",
+        help="Target date. Accepts a day of month like 15 or a full date like 2026-04-08."
     )
 
     parser.add_argument(
@@ -928,28 +943,34 @@ async def main():
         help="Run in dry run mode without making API changes to schedules."
     )
 
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Path to the YAML config file. Defaults to config.yaml."
+    )
+
     args = parser.parse_args()
-    optimizer = ESSOptimizer()
+    optimizer = ESSOptimizer(args.config)
 
     if args.date is not None:
-        if not (1 <= args.date <= 31):
-            logger.error(f"Invalid date: {args.date}. Must be between 1 and 31.")
-            return
-
         # Use configured timezone for consistency with default behavior
         now = datetime.now(ZoneInfo('UTC')).astimezone(optimizer.timezone)
         try:
-            target_date = datetime(now.year, now.month, args.date, tzinfo=optimizer.timezone)
+            target_date = parse_target_date_arg(args.date, optimizer.timezone, now=now)
             mode = "dry run" if args.dry_run else "live"
             logger.info(f"{mode.capitalize()} mode: Optimizing for {target_date.date()}")
             await optimizer.run_once(target_date, dry_run=args.dry_run)
         except ValueError as e:
-            logger.error(f"Invalid date: {e}")
+            logger.error(f"Invalid date '{args.date}': {e}")
             return
     else:
         # Default: run once for today (expected to be run at midnight)
         await optimizer.run_once(dry_run=args.dry_run)
 
 
-if __name__ == "__main__":
+def cli():
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli()
