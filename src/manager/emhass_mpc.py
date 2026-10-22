@@ -8,6 +8,7 @@ permission-only household discharge. It never sends device commands.
 import csv
 import json
 import logging
+import time
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -132,6 +133,7 @@ class EmhassPlanner:
         self.exact = exact
         self.terminal = terminal
         self.cache = {}
+        self.last_solve = None
         self.logger = logging.getLogger("household.emhass")
         self.logger.setLevel(logging.ERROR)
 
@@ -168,8 +170,10 @@ class EmhassPlanner:
             weight_battery_charge=0.0,
             set_total_pv_sell=False,
             num_threads=1,
-            lp_solver_mip_rel_gap=0.0001,
-            lp_solver_timeout=15,
+            # A 0.1% objective gap is stricter than EMHASS's 1% default, while
+            # avoiding excessive branch-and-bound work on low-power ARM hosts.
+            lp_solver_mip_rel_gap=0.001,
+            lp_solver_timeout=60,
         )
         # These are nonbinding numerical bounds derived from physical capacity
         # and the supplied forecasts, never a household grid-import policy.
@@ -247,6 +251,7 @@ class EmhassPlanner:
             else float(self.terminal)
         )
         obj.terminal_value.value = terminal / 1000
+        started = time.monotonic()
         result = obj.perform_naive_mpc_optim(
             data,
             pv,
@@ -255,6 +260,15 @@ class EmhassPlanner:
             soc_init=telemetry.soc_percent / 100,
             soc_final=s.reserve_percent / 100,
         )
+        info = obj.prob.solver_stats.extra_stats if obj.prob.solver_stats else None
+        self.last_solve = {
+            "intervals": len(slots),
+            "seconds": round(time.monotonic() - started, 3),
+            "status": str(obj.optim_status),
+            "mip_gap": getattr(info, "mip_gap", None),
+            "relative_gap_limit": 0.001,
+            "time_limit_seconds": 60,
+        }
         if obj.optim_status != "Optimal" or result is None or result.empty:
             raise ValueError(
                 "EMHASS did not return an optimal feasible plan: "

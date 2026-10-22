@@ -102,3 +102,27 @@ def test_actual_economic_objective_matches_eur_physical_replay_and_terminal_stoc
     assert next(iter(planner.cache.values())).prob.value == pytest.approx(
         expected_profit, abs=1e-7
     )
+
+
+def test_full_next_day_horizon_is_not_truncated_and_reports_solver_certificate():
+    import math
+    from src.manager.solver_check import verify
+
+    start = datetime(2026, 10, 22, 13, 15, tzinfo=UTC)
+    slots = []
+    for i in range(131):
+        t = start + timedelta(minutes=15 * i)
+        hour = (t.hour + t.minute / 60) % 24
+        solar = max(0, 4 * math.sin((hour - 6) * math.pi / 12))
+        buy = 0.14 if hour < 5 or 11 <= hour < 15 else 0.4
+        slots.append(Slot(t.isoformat(), 100, buy, 0.05,
+                          0.6 + 0.4 * math.sin(i * 0.3) ** 2, solar, 'NT'))
+    from dataclasses import asdict
+    payload = {'slots': [asdict(r) for r in slots],
+               'telemetry': asdict(Telemetry(start.isoformat(), 61.6, 17.2, 1, 1, 0, 0))}
+    report = verify(payload, Settings(charge_kw=8.6, discharge_kw=8.6,
+                                    effective_capacity_kwh=14.2))
+    assert report['intervals'] == 131
+    assert [r['cached'] for r in report['runs']] == [False, True]
+    assert all(r['physical_replay'] == 'passed' for r in report['runs'])
+    assert all(r['mip_gap'] <= 0.001 for r in report['runs'])

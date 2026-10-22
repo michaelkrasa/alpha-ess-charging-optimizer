@@ -74,6 +74,7 @@ class Controller:
                     "active_planner": active,
                     "shadow_controls_device": False,
                     "measured_soc_percent": telemetry.soc_percent,
+                    "emhass_solver": self._emhass.last_solve,
                     "emhass": {
                         "charge": emhass_plan["charge"],
                         "discharge": emhass_plan["discharge"],
