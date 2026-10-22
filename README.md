@@ -4,7 +4,7 @@
 
 **Your battery. Tomorrow’s prices. A plan that keeps adapting.**
 
-[![Version](https://img.shields.io/badge/version-1.1.0-42684c)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-3.0.0-42684c)](pyproject.toml)
 [![Python](https://img.shields.io/badge/python-3.12–3.13-42684c)](pyproject.toml)
 [![Tests](https://github.com/michaelkrasa/alpha-ess-charging-optimizer/actions/workflows/tests.yml/badge.svg)](https://github.com/michaelkrasa/alpha-ess-charging-optimizer/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-d1aa4b)](LICENSE)
@@ -110,6 +110,6 @@ uv run --frozen --extra emhass --extra dev pytest tests/ -q
 
 The suite covers actual EMHASS solves, executable battery physics, price intervals, forecasts, control/readback failures and dashboard behavior. [Walk-forward validation](analysis/emhass_validation.md) · [Analysis guide](analysis/README.md) · [Contributing](CONTRIBUTING.md)
 
-**Version 1.1.0.** `uv.lock` pins the environment; the EMHASS adapter targets **0.18.6**. Dependabot is configured for weekly Python, Docker and Actions update proposals. Dependency changes need tests and, for the planner, replay validation; they are not automatically installed on an inverter controller.
+**Version 3.0.0.** `uv.lock` pins the environment; the EMHASS adapter targets **0.18.6**. Dependabot is configured for weekly Python, Docker and Actions update proposals. Dependency changes need tests and, for the planner, replay validation; they are not automatically installed on an inverter controller.
 
 Licensed under [MIT](LICENSE). Thanks to [EMHASS](https://github.com/davidusb-geek/emhass), [alphaessopenapi](https://github.com/CharlesGillanders/alphaess-openAPI), [OTE price fetcher](https://pypi.org/project/ote-cr-price-fetcher/) and [Open-Meteo](https://open-meteo.com/).
