@@ -126,3 +126,25 @@ def test_full_next_day_horizon_is_not_truncated_and_reports_solver_certificate()
     assert [r['cached'] for r in report['runs']] == [False, True]
     assert all(r['physical_replay'] == 'passed' for r in report['runs'])
     assert all(r['mip_gap'] <= 0.001 for r in report['runs'])
+
+
+@pytest.mark.parametrize('soc,charge_kw', [(8, 8.6), (0, 8.6), (9.9, 8.6), (0, 1)])
+def test_below_reserve_measurement_can_recover_without_discharge(soc, charge_kw):
+    start = datetime(2026, 10, 22, 20, tzinfo=UTC)
+    slots = [Slot((start + timedelta(minutes=15*i)).isoformat(), 50, .15, .03, .6, 0, 'NT') for i in range(16)]
+    state = Telemetry(start.isoformat(), soc, 14.2, .6, 0, .6, 0)
+    settings = Settings(charge_kw=charge_kw, discharge_kw=8.6, effective_capacity_kwh=14.2)
+    planner = EmhassPlanner(settings)
+    for _ in range(2):  # Recovery must also work with a reused parameterized solve.
+        decisions = planner.plan(slots, state)
+        assert len(decisions) == len(slots)
+        previous = soc
+        for decision in decisions:
+            if previous < settings.reserve_percent:
+                assert decision.battery_load_kw == 0
+                assert decision.soc_percent >= previous - 1e-5
+            else:
+                assert decision.soc_percent >= settings.reserve_percent - 1e-5
+            previous = decision.soc_percent
+        assert decisions[-1].soc_percent >= settings.reserve_percent - 1e-5
+    assert state.soc_percent == soc

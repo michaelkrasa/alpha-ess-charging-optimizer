@@ -110,7 +110,12 @@ class ApplianceOptimization(Optimization):
                 charge >= target_c - mc * full,
                 charge >= charge_space - mc * (1 - full),
                 discharge <= target_d,
-                discharge <= discharge_space,
+                # Below-reserve telemetry is valid during native balancing.
+                # An inactive house-supply mode must allow zero discharge even
+                # when raw available energy is negative. When enabled, retain
+                # the exact reserve bound; this cannot authorize discharge
+                # below the reserve or alter the measured starting SOC.
+                discharge <= discharge_space + md * (1 - mode_d),
                 discharge >= target_d - md * empty,
                 discharge >= discharge_space - md * (1 - empty),
             ]

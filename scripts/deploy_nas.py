@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import hashlib
+import ipaddress
 import os
 from pathlib import Path
 import shlex
@@ -67,7 +68,7 @@ def setup_helper(ssh, host, key):
     user = run(ssh + [host, 'id -un'], capture_output=True, text=True).stdout.strip()
     files = [ROOT / 'ops/nas' / name for name in ('update.py', 'receive.py', 'install_deploy.py')]
     try:
-        run(['scp', '-O', '-q', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-i', str(key),
+        run(['scp', '-O', '-q', *ssh[1:],
              *(str(p) for p in files), host + ':' + stage + '/'])
         lines = ''.join(digest(p) + '  ' + stage + '/' + p.name + '\n' for p in files)
         inner = 'printf %s ' + shlex.quote(lines) + ' | sha256sum -c - && exec /usr/bin/python3 -I '
@@ -114,10 +115,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default=os.environ.get('NAS_SSH_HOST'))
     parser.add_argument('--key', type=Path, default=Path.home() / '.ssh/id_ed25519')
+    parser.add_argument('--bind-address', type=ipaddress.ip_address, default=os.environ.get('NAS_SSH_BIND_ADDRESS'),
+                        help='Optional local source IP allowed by the NAS firewall')
     parser.add_argument('--image-only', action='store_true', help='Build a tested image for GUI import; no SSH needed')
     parser.add_argument('--setup', action='store_true', help='One-time installation of the restricted passwordless updater')
     args = parser.parse_args()
     ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=5', '-i', str(args.key)]
+    if args.bind_address:
+        ssh += ['-4' if args.bind_address.version == 4 else '-6', '-o', 'BindAddress=' + str(args.bind_address)]
     if not args.image_only and not args.host:
         parser.error('Supply --host USER@NAS, or NAS_SSH_HOST in your private .env')
     if args.setup:

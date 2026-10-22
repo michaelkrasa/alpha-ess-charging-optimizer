@@ -65,6 +65,8 @@ A Git push does not deploy automatically. Pull reviewed changes before deploying
 ./scripts/deploy-nas.sh --host YOUR_USER@YOUR_NAS --key ~/.ssh/id_ed25519
 ```
 
+If the deployment computer has both Ethernet and Wi-Fi, its route to the NAS may use a different source address from the one allowed by the firewall. Set optional `NAS_SSH_BIND_ADDRESS` in the private `.env`, or pass `--bind-address`, to use a specific local address already allowed by the NAS. That address must still be assigned to the computer. This avoids broadening firewall rules when switching interfaces.
+
 This unattended path leaves LAN-restricted SSH enabled. If you prefer disabling SSH between updates, enable it before running the command and disable it afterwards; the installed helper still removes repeated sudo prompts. To revoke passwordless deployment, remove `/etc/sudoers.d/alphaess-update` as administrator and remove the helper/install directory if no longer needed.
 
 The updater currently expects `/volume1/docker/alphaess-household`, Compose project `alphaess-household`, root-owned configuration and a `nas-live.enabled` marker for live mode. It targets that commissioned layout, not every Docker host. Generic Compose installations can use their normal build/recreate process instead. The restricted helper and unattended update path have been verified on the commissioned DSM installation. Validate them on each new target host.
