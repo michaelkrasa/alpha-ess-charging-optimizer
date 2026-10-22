@@ -35,7 +35,16 @@ Synology Container Manager can import the Compose project instead. The image use
 
 ## Updates to a commissioned Synology
 
-From the development computer, with Docker running and authorized SSH access:
+Updates are deliberate deployments of a tested container image; a Git push or Dependabot PR does not change the running NAS service. The source is built on the development computer, then the NAS container is replaced while its bind-mounted database, private credentials and installation settings remain in place.
+
+For a normal update, enable SSH temporarily in DSM **Control Panel → Terminal & SNMP**, start Docker on the development computer, then:
+
+```bash
+git pull --ff-only
+./scripts/deploy-nas.sh
+```
+
+The short command uses `NAS_SSH_HOST` from your private `.env`. It prompts for the NAS administrator password at the privileged replacement step. Disable temporary SSH after successful verification. For explicit connection details:
 
 ```bash
 ./scripts/deploy-nas.sh --host YOUR_USER@YOUR_NAS
