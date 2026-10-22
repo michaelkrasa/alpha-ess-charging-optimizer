@@ -37,3 +37,9 @@ Runtime image config identity: `sha256:210772448b86a13a581c07629acbdd846f33bf3c0
 Settings readback establishes stored configuration, not guaranteed execution of future intervals or realized financial savings.
 
 Raw captured inputs and operational reports stay outside Git. Exact timings are machine/load/input dependent; these checks do not prove that every future MILP will finish within the limit.
+
+## Dashboard and one-command update acceptance
+
+A subsequent update on 22 October verified the restricted, root-owned deployment helper on DSM Python 3.8 without `visudo`. Its harmless probe runs with root only through the fixed no-argument sudo command; general passwordless commands remain unavailable. The normal `./scripts/deploy-nas.sh` path then completed unattended, preserving live ON intent, checking the exact runtime image identity and requiring a fresh post-restart controller cycle.
+
+The updated service solved the complete 123-quarter horizon in 48.026 seconds, status `Optimal`, achieved objective gap 0.03440% against the configured 0.1% limit. Both charge and household-supply settings matched readback. The older-planner comparison also completed after correcting its missing packaged configuration dependency. Daily energy counters and prospective SOC tracking were populated; served dashboard bytes matched the locally tested source. The local suite passed 610 tests (131 skipped). No objective, tariff or battery-physics assumptions changed in this dashboard/deployment update.

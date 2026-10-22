@@ -39,7 +39,7 @@ Updates are deliberate deployments of a tested container image; a Git push or De
 
 ### One-time authorization
 
-Enable SSH in DSM **Control Panel → Terminal & SNMP**. Keep it reachable only from your trusted deployment computer using the NAS firewall; use a reserved LAN address and no router port forwarding. Save `NAS_SSH_HOST=YOUR_USER@YOUR_NAS` in your private `.env`, then:
+Enable SSH in DSM **Control Panel → Terminal & SNMP**. Keep it reachable only from your trusted deployment computer using the NAS firewall; remove any broader SSH service allow rule that DSM adds when enabling SSH. Use a reserved LAN address and no router port forwarding. Save `NAS_SSH_HOST=YOUR_USER@YOUR_NAS` in your private `.env`, then:
 
 ```bash
 ./scripts/deploy-nas.sh --setup
@@ -47,7 +47,7 @@ Enable SSH in DSM **Control Panel → Terminal & SNMP**. Keep it reachable only 
 
 Enter the NAS administrator password once. This installs a root-owned updater and a narrow sudo rule: only `/usr/local/sbin/alphaess-update` **with no arguments** is passwordless. The helper accepts a bounded image upload over stdin, validates its SHA-256 and Docker image identity, and uses the existing root-owned Compose configuration. It does not execute uploaded Python, accept shell commands or grant general passwordless sudo. The deployment computer and its SSH key are trusted to replace this app; protect that key.
 
-The installer checks that DSM includes `/etc/sudoers.d` and validates the new rule with `visudo`. If that integration is unavailable it stops instead of editing the main sudo policy. It does not enable SSH or alter firewall rules. Check the helper after DSM updates; reinstall with `--setup` if removed. Changes to the privileged updater itself also require rerunning setup deliberately.
+The installer checks that DSM includes `/etc/sudoers.d` and uses `visudo` when available. It then switches to the deployment account, ignores cached authentication and invokes a harmless privileged updater probe. This tests the real passwordless path even on DSM installations without `visudo`; a failed probe restores the previous rule. If `sudoers.d` is not included, setup stops instead of editing the main sudo policy. It does not enable SSH or alter firewall rules. Check the helper after DSM updates; reinstall with `--setup` if removed. Changes to the privileged updater itself also require rerunning setup deliberately.
 
 ### Every update afterwards
 
@@ -67,7 +67,7 @@ A Git push does not deploy automatically. Pull reviewed changes before deploying
 
 This unattended path leaves LAN-restricted SSH enabled. If you prefer disabling SSH between updates, enable it before running the command and disable it afterwards; the installed helper still removes repeated sudo prompts. To revoke passwordless deployment, remove `/etc/sudoers.d/alphaess-update` as administrator and remove the helper/install directory if no longer needed.
 
-The updater currently expects `/volume1/docker/alphaess-household`, Compose project `alphaess-household`, root-owned configuration and a `nas-live.enabled` marker for live mode. It targets that commissioned layout, not every Docker host. Generic Compose installations can use their normal build/recreate process instead. The setup itself needs target-host verification before treating this shortcut as commissioned.
+The updater currently expects `/volume1/docker/alphaess-household`, Compose project `alphaess-household`, root-owned configuration and a `nas-live.enabled` marker for live mode. It targets that commissioned layout, not every Docker host. Generic Compose installations can use their normal build/recreate process instead. The restricted helper and unattended update path have been verified on the commissioned DSM installation. Validate them on each new target host.
 
 ### GUI import alternative
 

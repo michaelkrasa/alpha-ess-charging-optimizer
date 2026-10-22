@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One-time root installation of the fixed, passwordless image-update helper."""
 import argparse
+import json
 import os
 from pathlib import Path
 import pwd
@@ -20,6 +21,39 @@ def rule_for(user):
     return user + ' ALL=(root) NOPASSWD: ' + str(COMMAND) + ' ""\n'
 
 
+def install_policy(user, sudo, visudo=None):
+    rule = rule_for(user)
+    candidate = RULE.with_suffix('.candidate')
+    candidate.write_text(rule)
+    os.chown(candidate, 0, 0)
+    candidate.chmod(0o440)
+    previous = RULE.read_bytes() if RULE.exists() else None
+    installed = False
+    try:
+        if visudo:
+            subprocess.run([visudo, '-cf', str(candidate)], check=True)
+        candidate.replace(RULE)
+        installed = True
+        # DSM may omit visudo. Verify with the real sudo interpreter instead:
+        # become the deployment user, ignore cached authentication (-k), and
+        # invoke ONLY the installed helper with a harmless stdin probe.
+        result = subprocess.run([sudo, '-n', '-u', user, sudo, '-n', '-k', str(COMMAND)],
+                                input='{"probe":true}\n', capture_output=True, text=True, timeout=30)
+        if result.returncode or json.loads(result.stdout) != {'protocol': 1, 'uid': 0}:
+            raise RuntimeError('Passwordless updater probe failed; restoring previous policy')
+    except BaseException:
+        if installed:
+            if previous is None:
+                RULE.unlink()
+            else:
+                candidate.write_bytes(previous)
+                candidate.chmod(0o440)
+                candidate.replace(RULE)
+        raise
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--user', required=True)
@@ -28,7 +62,10 @@ def main():
     if os.geteuid() != 0:
         parser.error('Run this installer through sudo once')
     pwd.getpwnam(args.user)
-    visudo = shutil.which('visudo') or '/usr/sbin/visudo'
+    visudo = shutil.which('visudo')
+    sudo = shutil.which('sudo')
+    if not sudo:
+        raise RuntimeError('sudo is unavailable; no sudo policy changed')
     if not Path('/etc/sudoers.d').is_dir():
         raise RuntimeError('sudoers.d is unavailable; no sudo policy changed')
     if not re.search(r'^\s*(?:#|@)includedir\s+/etc/sudoers.d\s*$', Path('/etc/sudoers').read_text(), re.M):
@@ -50,15 +87,7 @@ def main():
     COMMAND.write_text('#!/bin/sh\nexec /usr/bin/python3 -I ' + str(DEST / 'receive.py') + '\n')
     os.chown(COMMAND, 0, 0)
     COMMAND.chmod(0o755)
-    candidate = RULE.with_suffix('.candidate')
-    candidate.write_text(rule)
-    os.chown(candidate, 0, 0)
-    candidate.chmod(0o440)
-    try:
-        subprocess.run([visudo, '-cf', str(candidate)], check=True)
-        candidate.replace(RULE)
-    finally:
-        candidate.unlink(missing_ok=True)
+    install_policy(args.user, sudo, visudo)
     print('Installed fixed AlphaESS updater. Only this no-argument command is passwordless.')
 
 

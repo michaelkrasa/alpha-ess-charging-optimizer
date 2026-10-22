@@ -74,7 +74,7 @@ def setup_helper(ssh, host, key):
         inner += shlex.quote(stage + '/install_deploy.py') + ' --user ' + shlex.quote(user)
         print('One-time authorization: enter your NAS password. Future updates will not prompt.', flush=True)
         run(ssh + ['-t', host, 'sudo /bin/sh -c ' + shlex.quote(inner)])
-        run(ssh + [host, 'sudo -n -l /usr/local/sbin/alphaess-update'], stdout=subprocess.DEVNULL)
+        probe_helper(ssh, host)
         print('Setup complete. Keep SSH restricted to the trusted deployment computer on the LAN.', flush=True)
     finally:
         paths = ' '.join(shlex.quote(stage + '/' + p.name) for p in files)
@@ -100,6 +100,14 @@ def send_image(ssh, host, archive):
         raise RuntimeError('NAS deployment failed; review the updater output above')
 
 
+def probe_helper(ssh, host):
+    import json
+    result = run(ssh + [host, 'sudo -n /usr/local/sbin/alphaess-update'],
+                 input='{"probe":true}\n', capture_output=True, text=True)
+    if json.loads(result.stdout) != {'protocol': 1, 'uid': 0}:
+        raise RuntimeError('NAS updater did not pass its harmless privileged probe')
+
+
 def main():
     from dotenv import load_dotenv
     load_dotenv(ROOT / '.env', override=False)
@@ -118,8 +126,9 @@ def main():
         setup_helper(ssh, args.host, args.key)
         return
     if not args.image_only:
-        check = subprocess.run(ssh + [args.host, 'test -x /usr/local/sbin/alphaess-update'], capture_output=True)
-        if check.returncode:
+        try:
+            probe_helper(ssh, args.host)
+        except (subprocess.CalledProcessError, ValueError):
             raise SystemExit('NAS updater unavailable. Enable LAN-only SSH and run ./scripts/deploy-nas.sh --setup once.')
     try:
         import json

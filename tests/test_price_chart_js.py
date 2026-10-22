@@ -58,6 +58,17 @@ const guide=paths.find(p=>p.color==='#53625b');assert(guide&&guide.points[0][0]=
 solarForecastPlot();
 const solar=paths.find(p=>p.color==='#b57613'&&p.points.length).points;
 assert.ok(Math.abs(solar[0][0]-(46+49*slotWidth))<1e-8,'Solar forecast must share the exact price interval x axis');
+data.telemetry={timestamp:'2026-10-21T09:57:00+00:00',soc_percent:52};
+paths.length=0;pricePlot();
+const nowX=46+48*slotWidth;
+const estimate=paths.find(p=>p.color==='#39769d'&&p.points.length===2);
+assert(estimate,'Latest measured SOC must be connected to Now by a visual estimate');
+assert.ok(Math.abs(estimate.points[1][0]-nowX)<1e-8);
+assert.equal(estimate.points[0][1],estimate.points[1][1],'Hold the latest known SOC rather than manufacture activity');
+const forecastLink=paths.filter(p=>p.color==='#41674b').at(-1);
+assert.ok(Math.abs(forecastLink.points[0][0]-nowX)<1e-8,'Forecast must begin at Now');
+assert.equal(forecastLink.points[0][1],estimate.points[1][1],'Measured estimate and forecast must meet');
+assert.equal(data.telemetry.soc_percent,52,'Rendering must not rewrite measurements');
 selectedDay='tomorrow';assert.equal(visiblePrices().length,0);
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True)

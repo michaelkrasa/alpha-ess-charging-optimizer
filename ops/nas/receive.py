@@ -15,6 +15,8 @@ def receive(stream, destination):
     if len(header) > 4096 or not header.endswith(b'\n'):
         raise ValueError('Invalid deployment header')
     info = json.loads(header)
+    if info == {'probe': True}:
+        return info
     size = info.get('size')
     if (type(size) is not int or not 0 < size <= MAX_IMAGE_BYTES
             or not re.fullmatch(r'[0-9a-f]{64}', info.get('sha256', ''))
@@ -50,6 +52,9 @@ def main():
         archive = Path(work) / 'image.tar.gz'
         info = receive(sys.stdin.buffer, archive)
         signal.alarm(0)
+        if info.get('probe') is True:
+            print(json.dumps({'protocol': 1, 'uid': os.geteuid()}))
+            return
         apply_archive(archive, info['sha256'], info['image_id'])
 
 
