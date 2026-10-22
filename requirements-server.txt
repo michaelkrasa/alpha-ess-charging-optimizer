@@ -162,7 +162,7 @@ msgpack==1.2.3
     # via
     #   blosc2
     #   influxdb
-multidict==6.7.1
+multidict==7.1.0
     # via
     #   aiohttp
     #   yarl
