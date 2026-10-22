@@ -79,9 +79,20 @@ def sample_state():
             'write_interval_seconds': 10, 'daily_write': None, 'history': []}
 
 
+def stable_numbers(value):
+    # libm may differ in the final floating-point bits between Linux and macOS.
+    if isinstance(value, float):
+        return round(value, 6) or 0.0
+    if isinstance(value, dict):
+        return {key: stable_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [stable_numbers(item) for item in value]
+    return value
+
+
 def build():
     source = (ROOT / 'src/manager/dashboard.html').read_text()
-    state = json.dumps(sample_state(), separators=(',', ':'), allow_nan=False)
+    state = json.dumps(stable_numbers(sample_state()), separators=(',', ':'), allow_nan=False)
     script = '''
 const demoState = DEMO_STATE;
 const demoSchedule = JSON.parse(JSON.stringify(demoState.device_schedule));
