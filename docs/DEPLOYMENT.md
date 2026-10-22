@@ -7,9 +7,11 @@
 | Raspberry Pi | 64-bit OS + same server container | Local persistent disk | ARM64 packaging is reusable; actual Pi commissioning still needed |
 | AWS Lambda | `lambda_handler.py`, SAM scaffold | DynamoDB | Current full EMHASS configuration not validated end to end |
 
-## Current performance caveat
+## Full-horizon performance
 
-A low-power ARM64 NAS hit the 15-second EMHASS solve limit after next-day publication expanded the horizon beyond 24 hours (observed 22 October 2026). The same captured inputs solved on a faster development host; CPU-constrained container replay reproduced `User_Limit`. The final target-host remedy is still under investigation. An image smoke test or HTTP heartbeat does not establish planner health: require a fresh successful full-horizon controller cycle before accepting a deployment.
+The initial 15-second / 0.01% gap setting timed out on a low-power ARM64 NAS after next-day publication extended the horizon. The adapter now allows 60 seconds and a 0.1% relative objective gap, retaining the complete horizon and independent physical replay. Six 131-quarter checks passed on that NAS (slowest 41.6 seconds), followed by a fresh live 128-quarter plan in 19.9 seconds and confirmed inverter settings. [Validation evidence](../analysis/nas_solver_validation.md).
+
+Performance depends on hardware, inputs and load. Require a fresh successful controller cycle after updates; an image smoke test or HTTP heartbeat alone does not establish planner health.
 
 For an always-on household, start with [Docker Compose](../NAS.md). It keeps scheduling, dashboard and durable state together, without buying cloud capacity.
 

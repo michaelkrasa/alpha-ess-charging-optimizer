@@ -74,7 +74,7 @@ Open **[localhost:8765](http://127.0.0.1:8765)**. This starts in observation mod
 | Where | Path | Status |
 | --- | --- | --- |
 | Computer / Linux server | Python + uv | Local operation supported |
-| Synology or another NAS | Docker Compose + persistent SQLite | ARM64 packaging exercised; [full-horizon timeout under investigation](docs/DEPLOYMENT.md#current-performance-caveat) |
+| Synology or another NAS | Docker Compose + persistent SQLite | ARM64 full-horizon replay and live control [verified](analysis/nas_solver_validation.md) |
 | Raspberry Pi | 64-bit OS + Docker Compose | Same ARM64 target; hardware performance still needs validation |
 | AWS Lambda | Lambda/SAM + DynamoDB | Packaging scaffold exists; current EMHASS deployment is **experimental**, not a turnkey/free guarantee |
 

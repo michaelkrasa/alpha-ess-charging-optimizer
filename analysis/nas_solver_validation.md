@@ -1,6 +1,6 @@
 # Full-horizon solver validation
 
-Validation in progress — 22 October 2026.
+NAS acceptance completed — 22 October 2026.
 
 ## Cause and change
 
@@ -20,6 +20,20 @@ The controller records interval count, solve duration, status, achieved gap and 
 
 ## NAS acceptance
 
-Pending actual hardware execution. The staged root command benchmarks six full-horizon runs in an isolated container, then updates the service only after they pass. Acceptance also requires a fresh live controller cycle with a full-horizon certificate, cloud contact and confirmed inverter charge/discharge settings. HTTP availability alone does not pass.
+All six checks passed on the actual ARM64 NAS, in a network-isolated container using the installation settings and captured 131-quarter input:
+
+| Starting SOC | Cold solve | Cached solve | Physical replay |
+| --- | --- | --- | --- |
+| 60.8% | 24.346 s | 22.851 s | Passed both |
+| 61.6% | 41.570 s | 0.905 s | Passed both |
+| 62.4% | 15.113 s | 7.393 s | Passed both |
+
+All achieved objective gaps were below 0.1%. The tested image was then deployed with the existing private configuration, credentials and enabled control intent preserved.
+
+The first live cycle solved **all 128 available future price intervals in 19.899 seconds**, with a 0.09847% objective gap. The returned plan timestamps were compared with every published price interval from the next boundary onward: no intervals were dropped. Both inverter configurations were accepted and confirmed by readback at **15:53:54 CEST**. Controller health became `active`, management remained ON, and cloud contact was fresh. The guarded updater reported success; this is execution of the deployed service, not only an isolated benchmark.
+
+Runtime image config identity: `sha256:210772448b86a13a581c07629acbdd846f33bf3c0b7358c94fc609d7d7a62651`. Raw status and deployment logs are retained privately under ignored `output/`.
+
+Settings readback establishes stored configuration, not guaranteed execution of future intervals or realized financial savings.
 
 Raw captured inputs and operational reports stay outside Git. Exact timings are machine/load/input dependent; these checks do not prove that every future MILP will finish within the limit.
