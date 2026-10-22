@@ -25,6 +25,9 @@ def day_measurements(rows, now):
                 "load_kw": load,
                 "solar_kw": solar,
             }
+            soc = row.get("soc_percent")
+            if isinstance(soc, (int, float)) and math.isfinite(soc) and 0 <= soc <= 100:
+                found[t.astimezone(UTC).isoformat()]["soc_percent"] = float(soc)
         except (ValueError, TypeError, KeyError):
             continue
     return [found[t] for t in sorted(found)]
@@ -64,6 +67,7 @@ def cache_power_history(store, samples, now):
                     "timestamp": stamp.isoformat(),
                     "load_kw": float(sample["load"]) / 1000,
                     "solar_kw": float(sample["ppv"]) / 1000,
+                    "soc_percent": float(sample["cbat"]) if sample.get("cbat") is not None else None,
                 }
             )
         except (ValueError, KeyError, TypeError):
@@ -76,6 +80,7 @@ def cache_power_history(store, samples, now):
         {
             "day": day,
             "history_checked_at": now.isoformat(),
+            "soc_history_backfilled": True,
             "rows": day_measurements([*rows, *current], now),
         },
     )

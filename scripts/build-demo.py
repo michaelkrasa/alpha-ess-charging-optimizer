@@ -58,7 +58,15 @@ def sample_state():
     future = [d for d in decisions if d['timestamp'] > stamp(now)]
     schedule = {'charge': charge, 'discharge': discharge, 'checked_at': stamp(now),
                 'source': 'pair_readback', 'readback_pending': False}
-    return {'now': stamp(now), 'price_intervals': prices,
+    actual = [{'timestamp': r['timestamp'], 'actual_soc': r['soc_percent']} for r in measurements]
+    past_expected = [{'timestamp': r['timestamp'], 'expected_soc': max(0, min(100, r['actual_soc'] + 1.4 * math.sin(i / 7))),
+                      'actual_soc': r['actual_soc'], 'delta_pp': r['actual_soc'] - max(0, min(100, r['actual_soc'] + 1.4 * math.sin(i / 7))),
+                      'issued_at': stamp(datetime.fromisoformat(r['timestamp']) - timedelta(minutes=30))}
+                     for i, r in enumerate(actual)]
+    future_expected = [{'timestamp': stamp(datetime.fromisoformat(r['timestamp']) + timedelta(minutes=15)),
+                        'expected_soc': r['soc_percent'], 'actual_soc': None, 'delta_pp': None, 'issued_at': stamp(now)} for r in future]
+    return {'now': stamp(now), 'soc_tracking': {'actual': actual, 'rows': past_expected + future_expected,
+            'latest': past_expected[-1], 'mean_absolute_error_pp': 1.0}, 'price_intervals': prices,
             'control': {'enabled': True, 'revision': 1, 'restore_pending': False},
             'health': {'status': 'active', 'timestamp': stamp(now), 'message': 'Sample controller cycle completed.'},
             'telemetry': current, 'device_connection': {'status': 'connected',
@@ -92,7 +100,11 @@ def stable_numbers(value):
 
 def build():
     source = (ROOT / 'src/manager/dashboard.html').read_text()
-    state = json.dumps(stable_numbers(sample_state()), separators=(',', ':'), allow_nan=False)
+    sys.path.insert(0, str(ROOT))
+    from src.manager.plan_insight import explain_plan
+    data = sample_state()
+    data['plan_insights'] = explain_plan(data['plan'], data['price_intervals'])
+    state = json.dumps(stable_numbers(data), separators=(',', ':'), allow_nan=False)
     script = '''
 const demoState = DEMO_STATE;
 const demoSchedule = JSON.parse(JSON.stringify(demoState.device_schedule));

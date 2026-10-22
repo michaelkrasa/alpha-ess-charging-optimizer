@@ -18,6 +18,8 @@ from pydantic import BaseModel, StrictBool
 
 from .controller import Controller
 from .energy_day import dashboard_energy
+from .soc_tracking import dashboard_soc
+from .plan_insight import explain_plan
 from .domain import PRAGUE, day_slots, next_boundary, utc_now
 from .settings import load_settings
 from .store import BusyError, make_store
@@ -280,14 +282,18 @@ def create_app(
         plan = store.get("plan")
         if plan and plan.get("mode", "periodic") != settings.control_mode:
             plan = None
+        energy = dashboard_energy(store, now, history)
+        price_rows = dashboard_prices(store, settings, now)
         return {
             "now": now.isoformat(),
-            "price_intervals": dashboard_prices(store, settings, now),
+            "price_intervals": price_rows,
+            "plan_insights": explain_plan(plan, price_rows),
             "control": controller.control(),
             "health": store.get("health"),
             "telemetry": store.get("telemetry"),
             "device_connection": store.get("device_connection"),
-            "energy_day": dashboard_energy(store, now, history),
+            "energy_day": energy,
+            "soc_tracking": dashboard_soc(store, now, energy),
             "plan": plan,
             "replay": store.get("replay"),
             "actuation": store.get("actuation"),

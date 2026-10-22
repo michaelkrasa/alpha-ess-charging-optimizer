@@ -29,7 +29,8 @@ Charge when the expected savings justify it. Keep energy for expensive periods. 
 | --- | --- |
 | Battery charge, measured activity and solar output | Today/tomorrow prices on a linear scale |
 | Automatic management ON/OFF and connection freshness | Proposed actions beside settings read back from the inverter |
-| Next import price, daily min/max/mean | Solar and site demand filling in from midnight |
+| Next import price, daily min/max/mean | Expected vs measured battery charge, quarter-hour deltas |
+| Short daily plan summaries | Solar and site demand filling in from midnight |
 
 [Explore the dashboard in your browser →](https://michaelkrasa.github.io/alpha-ess-charging-optimizer/) Switch days, inspect prices, expand the schedule, and try ON/OFF. The sample uses the real dashboard with synthetic data. It works on desktop, tablet and phone, and can be downloaded as one self-contained HTML file.
 

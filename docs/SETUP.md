@@ -60,3 +60,9 @@ uv run --extra emhass python scripts/preview-dashboard.py --source http://YOUR_S
 ```
 
 Open `http://127.0.0.1:8766`. POST requests are rejected, leaving the existing manager as the sole writer. This is a UI preview, not an independent live controller.
+
+## Battery forecast tracking
+
+The price chart overlays expected and measured battery charge on a 0–100% axis. Measurements are aligned to quarter-hour boundaries; short, bracketed gaps are interpolated, longer gaps remain blank. Curves are smoothed for display without changing the recorded points. Hover or use the arrow keys to inspect the time, prices, SOC and actual-minus-expected difference in percentage points.
+
+After a confirmed active plan, future SOC expectations are saved and may update until their interval begins. Past expectations are retained unchanged. A new installation therefore shows measured history immediately when available, but cannot invent historical predictions; comparisons accumulate prospectively. Deltas reflect forecast and execution differences, including manual intervention. Day summaries describe the current plan and import-price peaks; they do not promise savings.

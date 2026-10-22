@@ -15,7 +15,7 @@ def test_price_renderer_keeps_full_day_and_draws_linear_uncompressed_spread():
     renderer = source.split("function visiblePrices()", 1)[1].split("function charts()", 1)[0]
     script = r"""
 const assert=require('node:assert/strict');
-let data={now:'2026-10-21T10:00:00+00:00'},plan=[],selectedDay='all',priceBasis='spot';
+let data={now:'2026-10-21T10:00:00+00:00'},plan=[],selectedDay='all',priceBasis='spot',hoverStamp=null;
 const dayKey=t=>new Date(new Date(t).getTime()+7200000).toISOString().slice(0,10);
 const targetDays=()=>({today:'2026-10-21',tomorrow:'2026-10-22'});
 const clock=t=>new Date(t).toISOString().slice(11,16),dayTitle=x=>x;
@@ -53,6 +53,8 @@ assert.ok(captions.priceRange.includes('200.00 €/MWh'));
 const negative=priceAxis([-30,20]);assert.ok(negative.min<-30&&negative.max>20);
 const flat=priceAxis([100,100]);assert.ok(flat.max>flat.min);
 priceBasis='import';pricePlot();assert.equal(captions.priceLegend,'Your import · €/MWh');
+hoverStamp=data.price_intervals[32].timestamp;pricePlot();
+const guide=paths.find(p=>p.color==='#53625b');assert(guide&&guide.points[0][0]===guide.points[1][0],'Hover must draw a vertical time guide');
 selectedDay='tomorrow';assert.equal(visiblePrices().length,0);
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True)

@@ -15,6 +15,7 @@ from .store import BusyError
 from .daily import plan_daily
 from .legacy_device import LegacyDevice
 from .energy_day import cache_power_history, record_measurement
+from .soc_tracking import capture_forecast
 
 
 class Controller:
@@ -284,6 +285,7 @@ class Controller:
             checked = cached.get("history_checked_at")
             if (
                 not checked
+                or not cached.get("soc_history_backfilled")
                 or (utc_now() - datetime.fromisoformat(checked)).total_seconds() >= 900
             ):
                 try:
@@ -585,6 +587,8 @@ class Controller:
                     )
             if not self.store.is_owner(owner):
                 return lost_lease()
+            if status == "active" and not (daily and daily.get("first_action_projection")):
+                capture_forecast(self.store, payload, utc_now())
             self.store.put("last_success", now.isoformat())
             record = {
                 "type": "cycle",
