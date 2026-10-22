@@ -46,3 +46,7 @@ poetry.lock
 README.md
 *.md
 
+
+# Private installation settings
+manager.local.yaml
+solar.local.yaml

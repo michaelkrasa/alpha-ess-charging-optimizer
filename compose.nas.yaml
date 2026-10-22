@@ -17,10 +17,12 @@ services:
       APP_ID: "${APP_ID:?Supply APP_ID in the deployment env file}"
       APP_SECRET: "${APP_SECRET:?Supply APP_SECRET in the deployment env file}"
       SERIAL_NUMBER: "${SERIAL_NUMBER:?Supply SERIAL_NUMBER in the deployment env file}"
+      ENTSOE_TOKEN: "${ENTSOE_TOKEN:-}"
     volumes:
       - ./data:/app/data
-      - ./manager.yaml:/app/manager.yaml:ro
-      - ./solar_config.yaml:/app/solar_config.yaml:ro
+      - ${MANAGER_CONFIG:-./manager.yaml}:/app/manager.yaml:ro
+      - ${SOLAR_CONFIG:-./solar_config.yaml}:/app/solar_config.yaml:ro
+      - ${SOLAR_CONFIG:-./solar_config.yaml}:/app/solar.local.yaml:ro
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777

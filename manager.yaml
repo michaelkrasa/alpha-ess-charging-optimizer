@@ -1,46 +1,28 @@
-# Standard API: two charge and two household-discharge windows; periodic scheduling returns 6017.
+# Starting point: observation only. Enter your hardware's verified limits.
 control_mode: legacy_daily
-# Repeated writes verified on this household. Respect the general API spacing.
-legacy_min_write_interval_seconds: 10
+standard_planner: emhass
+emhass_shadow: false
 timezone: Europe/Prague
+interval_minutes: 15
 reserve_percent: 10
 maximum_percent: 100
-# Read-only power-balance observations reach ~8.6 kW, including night charging.
-charge_kw: 8.6
-discharge_kw: 8.6
-# Estimated SOC-to-energy scale from completed September/October episodes.
-# Nominal API capacity remains 17.2 kWh in telemetry. Validate over 14–17.2 kWh.
-effective_capacity_kwh: 14.2
-# Original algorithm used 17.2 * 90%; preserve that internal baseline assumption.
-legacy_reference_capacity_kwh: 15.48
-# Score several plausible SOC/energy scales rather than trusting one fit.
-capacity_scenarios_kwh: [14.2, 15.48, 17.2]
-# No software import cap. The previous 20 kW assumption was not a device limit.
+charge_kw: 5
+discharge_kw: 5
+# null uses API-reported nominal capacity; calibrate only with evidence.
+effective_capacity_kwh: null
 import_limit_kw: null
 charge_efficiency: 0.95
 discharge_efficiency: 0.95
-# Assumption, not an invoice charge: per kWh discharged to household loads.
 wear_eur_per_kwh: 0.045
-history_days: 365
-# EV is grid-only and blocks battery discharge. This meter has no EV channel;
-# infer likely sessions for demand training while retaining total site billing.
-exclude_inferred_grid_only_ev: true
-# Selected after executable42-day/90-day and physical-assumption comparisons.
-# The old search remains read-only for comparison; EMHASS is the sole writer.
-standard_planner: emhass
-emhass_shadow: true
-publication_hour: 15
-# OTE is the exact market referenced by the supplier; both sources deliver EUR.
-# Set entsoe + ENTSOE_TOKEN to use ENTSO-E instead.
+exclude_inferred_grid_only_ev: false
 price_source: ote
 entsoe_area: 10YCZ-CEPS-----N
-high_tariff_periods:
-  - ["09:00", "13:00"]
-# Verified against the household EAN in ČEZ's anonymous lookup, signal TCV1.
-# End date is exclusive. Recheck before extending; do not assume forever.
-tariff_valid_from: 2026-10-20
-tariff_valid_until: 2026-10-27
+publication_hour: 15
+# Czech tariff adapter currently requires your verified high-tariff periods.
+high_tariff_periods: null
+tariff_valid_from: null
+tariff_valid_until: null
 hold_verified: false
-# Live writes enabled explicitly by household owner; this is not a physical-verification certificate.
-device_control_verified: true
+device_control_verified: false
+solar_config_path: solar_config.yaml
 database_path: data/manager.sqlite3

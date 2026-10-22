@@ -1,0 +1,26 @@
+name: Tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --extra emhass --extra dev --python 3.12
+      - run: uv run --frozen --extra emhass --extra dev pytest tests/ -q
+      - name: Check container dependency export
+        run: |
+          uv export --frozen --extra emhass --no-dev --no-emit-project --no-hashes -o /tmp/requirements-server.txt
+          diff -u <(tail -n +4 requirements-server.txt) <(tail -n +4 /tmp/requirements-server.txt)
+        shell: bash

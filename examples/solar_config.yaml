@@ -1,0 +1,6 @@
+# Replace coordinates and panel geometry before using the forecast.
+latitude: 0.0
+longitude: 0.0
+tilt: 15
+# Open-Meteo azimuth: 0 south, -90 east, +90 west.
+azimuth: 0

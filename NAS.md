@@ -1,135 +1,79 @@
-# Household Synology deployment
+# Docker / NAS deployment
 
-## Running service
+Run the web server and controller together, with persistent SQLite on a local disk. Home Assistant is optional. Use a supported Container Manager / Docker installation; an SSH terminal alone does not imply that a NAS supports containers.
 
-- Dashboard: **http://nasnas.local:8765/** or **http://10.0.0.11:8765/**.
-- Container: `alphaess-household`; Compose project: `alphaess-household`.
-- Application directory: `/volume1/docker/alphaess-household`.
-- Persistent database: `data/manager.sqlite3` inside that directory.
-- Active planner: EMHASS; live capability enabled through `compose.nas.live.yaml`. Dashboard control is a separate persisted setting.
-- The previous Mac service was stopped before the NAS started. Never start two live controllers.
+## First installation
 
-This is a LAN service with no dashboard sign-in. It still communicates with the inverter through the AlphaESS cloud API. No direct inverter LAN/Modbus connection has been configured.
+1. Clone the repository. Follow [setup](docs/SETUP.md) to create `.env`, `manager.local.yaml` and `solar.local.yaml`.
+2. Add these paths to `.env`:
 
-## Hardware and commissioning
+   ```dotenv
+   MANAGER_CONFIG=./manager.local.yaml
+   SOLAR_CONFIG=./solar.local.yaml
+   # Set to the server's trusted LAN address for other devices to connect.
+   NAS_BIND_IP=127.0.0.1
+   ```
 
-Commissioned on 22 October 2026:
+3. Prepare the persistent directory and start in observation mode:
 
-| Item | Verified value |
+   ```bash
+   mkdir -p data
+   sudo chown 10001:10001 data
+   chmod 600 .env
+   docker compose --env-file .env -f compose.nas.yaml up -d --build
+   ```
+
+4. Open `http://YOUR_SERVER:8765`, check fresh cloud contact and review forecasts, tariff and readiness messages. Complete [commissioning](docs/SETUP.md#before-live-control) before adding the live override:
+
+   ```bash
+   docker compose --env-file .env -f compose.nas.yaml -f compose.nas.live.yaml up -d
+   ```
+
+5. Enable management in the dashboard. Keep one live instance per inverter.
+
+Synology Container Manager can import the Compose project instead. The image uses standard Linux Python; `Dockerfile.nas` is the long-running server image despite its name. A 64-bit Raspberry Pi is a candidate for this path, but solver performance on the actual hardware must be checked before live operation. This repository does not certify every NAS or Pi model.
+
+## Updates to a commissioned Synology
+
+From the development computer, with Docker running and authorized SSH access:
+
+```bash
+./scripts/deploy-nas.sh --host YOUR_USER@YOUR_NAS
+# Optional custom SSH key:
+./scripts/deploy-nas.sh --host YOUR_USER@YOUR_NAS --key ~/.ssh/id_ed25519
+```
+
+To keep future updates to `./scripts/deploy-nas.sh`, save `NAS_SSH_HOST=YOUR_USER@YOUR_NAS` in your private `.env`.
+
+The updater currently expects `/volume1/docker/alphaess-household`, Compose project `alphaess-household`, root-owned configuration and a `nas-live.enabled` marker for live mode. It targets that commissioned layout, not every Docker host. Generic Compose installations can use their normal build/recreate process instead.
+
+The command runs tests, builds Linux ARM64, smoke-tests the image without credentials/network access, transfers through SSH, backs up SQLite and recreates the container. A successful update requires a fresh controller cycle and cloud contact while preserving ON/OFF intent. A failed check restores the prior image and checks it again. If the prior controller is also unhealthy, the command reports failure; rollback is not proof of health.
+
+The NAS administrator enters a password when `sudo` asks; neither the script nor the image stores it. For a temporary maintenance session, disable SSH afterwards. App updates do not require a DSM root task or a Container Manager installation workaround.
+
+### GUI import alternative
+
+```bash
+./scripts/deploy-nas.sh --image-only
+```
+
+Import `dist/nas/alphaess.tar.gz` through **Container Manager → Image → Action → Import → Add From File → From local device**. Keep a known-good image. Stop the existing container, reset it to the imported image and start it with the existing mounts. Verify fresh telemetry and controller status. This manual path does not execute the SSH updater's automated rollback.
+
+## Data and credentials
+
+| Item | Handling |
 | --- | --- |
-| Model | RS819 |
-| CPU | Realtek RTD1296, ARM64, four cores at 1.4 GHz |
-| RAM | 2 GB |
-| DSM | 7.4.1-90080 Update 1 |
-| Container Manager | 24.0.2-1706 |
-| Python in container | 3.12 |
-| EMHASS | 0.18.6 |
-| Container memory limit | 1 GiB |
+| `.env` | Host-private file (`0600`); credentials injected at runtime |
+| `manager.local.yaml`, `solar.local.yaml` | Read-only bind mounts; installation-specific and Git-ignored |
+| `data/manager.sqlite3` | Persistent SQLite, writable by UID/GID 10001 |
+| Image | Contains application and dependencies; no API credentials |
 
-RS819 is excluded from the official Container Manager installation route. The owner explicitly authorized the reviewed [community workaround](https://github.com/007revad/ContainerManager_for_all_armv8). Installation used the official [ARM64 SPK](https://archive.synology.com/download/Package/ContainerManager/24.0.2-1706) and checksum-pinned installer source. Temporary model changes were restored and checked in both Synology configuration files.
+Docker administrators can inspect container environment values. Runtime environment variables protect secrets from image layers and Git, not from the host administrator. Back up through SQLite's backup API or stop the container before copying the database; a live file copy can omit WAL contents. Avoid network-mounted SQLite files.
 
-The initial server-download route stopped at the manual fallback. The successful route supplied the pinned official SPK locally through the same reviewed workaround. This is an unsupported installation; successful operation on this exact version does not establish compatibility with future DSM versions.
+The container drops capabilities, uses a read-only root filesystem, bounded logs and writable temporary storage. Its HTTP healthcheck checks server availability; the dashboard separately reports controller and cloud health.
 
-An isolated, network-disabled EMHASS solve on the actual NAS passed in **1.24 seconds**, with peak process RSS **196,764 KiB** (about 192 MiB). The 16-interval fixture verified charging under a low/high price spread and the 10% reserve. This is a solver smoke test, not a financial backtest or full runtime memory ceiling. A real forecast cycle also completed on the NAS with fresh cloud readings. Container Manager showed approximately 216 MB for the running Python process, with total NAS RAM around 41%. The container was restarted through Container Manager to verify persistent ON intent and recovery.
+## NAS and DSM updates
 
-The image was built for `linux/arm64`, loaded locally and tagged `alphaess-household:local`. EMHASS, NumPy, pandas, CVXPY and HiGHS versions match the validated stack. No credentials are embedded in the image. The staged SQLite snapshot was created through SQLite backup, with control OFF and stale health/lease records removed. Control was enabled only after the Mac stopped and fresh NAS observation succeeded.
+Prefer a model with official Container Manager support. `ops/nas/deploy.py`, `install-container-manager.sh` and `recover.py` contain an installation-specific, unsupported commissioning/recovery path. They are **not** general installation instructions. Recovery checks approved DSM/package identities and reports changed upstream installers; it does not automatically execute newly downloaded root scripts. Test a backup and recovery path before depending on an unsupported installation.
 
-## Container operation
-
-`Dockerfile.nas` is the regular server image. The original `Dockerfile` targets Lambda. Runtime configuration:
-
-- `.env`: `APP_ID`, `APP_SECRET`, `SERIAL_NUMBER`, `NAS_BIND_IP`.
-- `manager.yaml`: planner, reserve, battery model, price source and verified HDO validity.
-- `solar_config.yaml`: solar location/geometry.
-- Base Compose: monitoring/planning only.
-- Live override: passes `--live`; persisted control still determines whether schedules may change.
-
-From an administrator shell:
-
-```bash
-cd /volume1/docker/alphaess-household
-sudo docker compose --env-file .env -f compose.nas.yaml -f compose.nas.live.yaml ps
-sudo docker logs --tail 100 alphaess-household
-sudo docker stats --no-stream alphaess-household
-```
-
-The deployment directory and credentials are root-owned and private. The data directory is owned by UID/GID 10001, the unprivileged container account. The container has a read-only root, writable temporary storage, dropped capabilities, no-new-privileges, bounded logs and `restart: unless-stopped`.
-
-To stop/start deliberately:
-
-```bash
-sudo docker compose --env-file .env -f compose.nas.yaml -f compose.nas.live.yaml stop
-sudo docker compose --env-file .env -f compose.nas.yaml -f compose.nas.live.yaml up -d --no-build --pull never
-```
-
-Turning dashboard control OFF requests native inverter settings; stopping the container alone does not cancel installed schedules. A cloud outage also does not clear repeating schedules.
-
-## Credential handling
-
-Compose reads the host `.env` and injects `APP_ID`, `APP_SECRET` and `SERIAL_NUMBER` at container creation. The NAS `.env` is root-owned with mode `0600`, inside the root-owned deployment directory with mode `0700`. It is not bind-mounted into the container. The image Dockerfile copies only application/configuration sources, and `.dockerignore` excludes `.env` and `.env.*` from the build context. Git ignores environment files, including named variants, while tracking `.env.example` placeholders.
-
-This is permission-protected plaintext storage, not encrypted Docker Secrets. Root and administrators with Docker access can inspect the credentials in container metadata, including Container Manager's environment view. The application necessarily receives them in its environment. An unprivileged container process and read-only filesystem reduce other access, but do not create a secret boundary against NAS administrators or a compromised application.
-
-The public dashboard state does not return API credentials. Upstream AlphaESS logging is suppressed at the application entry point because SDK error messages can contain device identifiers. Keep raw container configuration/inspect output private; it can contain credential values. Credential-bearing transfer archives were removed from both NAS staging locations after successful commissioning, and the remaining local temporary archive was also removed. The original private Mac `.env` remains mode `0600` for authorized local recovery.
-
-To rotate credentials, obtain replacements through the AlphaESS developer account, edit the NAS `.env` privately as an administrator, and recreate the container using the same Compose files. A plain container restart does not reload changed Compose environment variables. Keep the old controller stopped during this operation and verify fresh cloud contact afterwards. Encrypt any backups containing `.env`; never include them in Git or dashboard screenshots.
-
-## Boot recovery and DSM updates
-
-The root boot hook is `/usr/local/etc/rc.d/S99alphaess-recover.sh`. It waits 60 seconds and invokes `ops/nas/recover.py`. The recovery command was run successfully again after installation to test idempotence. **An actual NAS reboot and a future DSM upgrade have not been tested.** DSM may change or remove custom startup hooks during upgrades; automatic operation cannot be guaranteed across arbitrary future releases.
-
-Recovery:
-
-1. Checks upstream GitHub for the newest commit affecting the community installer, fetches that immutable script and compares its SHA-256 with the reviewed copy. It does not execute downloaded code.
-2. Verifies the physical NAS model and restored identifiers.
-3. If Docker is already working, starts the existing local image without downloading or rebuilding it.
-4. If Docker needs repair, permits only explicitly commissioned DSM/package pairs. It backs up package INFO and removes only the model-exclusion field, then starts Container Manager.
-5. Waits for HTTP, the configured EMHASS planner, fresh AlphaESS cloud contact and a successful controller cycle.
-
-An unknown broken DSM/package combination stops for administrator review; it is never silently enrolled. A working new version may run the existing container, but is not automatically approved for future system-file repairs. The approved current pair is recorded in `approved-nas-versions.json` after actual NAS commissioning. Root ownership and write permissions are checked before running Compose.
-
-Status files in the application directory:
-
-| File | Meaning |
-| --- | --- |
-| `nas-recovery-status.json` | Recovery outcome and tested version identity |
-| `upstream-installer-status.json` | Upstream check time, DSM identity, commit and hashes |
-| `boot-recovery.log` | Boot invocation output |
-| `recovery-backups/` | Original INFO files before bounded repairs |
-| `nas-live.enabled` | Explicit marker allowing the live Compose override |
-
-Changed upstream scripts, failed version checks and recovery failures produce deduplicated local DSM notifications to the administrator. They do not automatically update the installer or the application image. At commissioning, the newest installer-file commit was `dbcb7ef182aa0cdbc533f41bd7697f2f6019b32e`; its script checksum matched the reviewed copy `de015c4c168d9415ebcdcfd492a1449eeff71f9237a95ff76330772f648fb5ef`.
-
-Manual recovery, when SSH is enabled:
-
-```bash
-sudo /usr/bin/python3 /volume1/docker/alphaess-household/ops/nas/recover.py \
-  --app-dir /volume1/docker/alphaess-household --notify-user misa
-```
-
-Review a new DSM/package combination before using `--enroll`. That flag requires fresh cloud contact and a completed controller cycle; it is not a compatibility bypass.
-
-## Security and access
-
-The active DSM firewall profile allows TCP/22 only from the commissioning Mac's current IPv4 address `10.0.0.182`, followed by a deny rule for all other sources on all interfaces. Fresh IPv4 SSH key login succeeded; an IPv6 link-local path could reach DSM but timed out on SSH. No globally routable NAS IPv6 address was present. Update the allow rule if the Mac's DHCP address changes.
-
-Auto Block was already enabled (five failures in five minutes, seven-day expiry), as was LAN1 DoS protection. The existing Mac public key is authorized for `misa`; the private key stays on the Mac. Sudo still requires administrator authentication. Temporary SSH is disabled after commissioning; re-enable it through DSM only when maintenance requires it.
-
-DSM listed no managed router port forwards. **Actual router WAN forwarding, UPnP, DMZ and upstream firewall configuration remain unverified**, because the owner deferred router review. Existing QuickConnect remains enabled. NAS filtering cannot prevent a volumetric DDoS attack from saturating the household internet connection. No claim of complete external isolation or external-WAN testing is made.
-
-Docker-published ports need their own exposure review; a DSM SSH rule is not proof that Docker forwarding is filtered. Keep 8765 off the router's public port-forward list. The dashboard has no local authentication by household choice.
-
-## Backups, updates and rollback
-
-Use `./scripts/deploy-nas.sh` from the Mac repository for regular updates after local preview verification. Enable SSH temporarily in DSM first, and disable it afterwards. The existing Mac key and Mac-only firewall rule are reused; sudo still requires the administrator password in the terminal. The command never copies or prints the NAS `.env`.
-
-The image-only build and GUI replacement path have been exercised on this NAS. The updater’s rollback and fresh-cycle checks have automated tests; its complete SSH/sudo invocation has not yet been exercised with SSH disabled.
-
-The updater saves a consistent root-only SQLite backup under `backups/`, keeps the previous image as `alphaess-household:rollback`, and writes a sanitized `last-update.json` on success. It checks new-process cycle/contact timestamps rather than accepting cached pre-restart health. If validation fails, it restores the previous image and verifies recovery. Image rollback preserves the current database; it does not automatically undo future schema migrations. For GUI-only imports, use `--image-only` and the Stop/Reset/Start flow in the project README.
-
-
-Back up `manager.yaml`, `solar_config.yaml`, the private `.env`, recovery approval files and SQLite state. Use SQLite's backup API or stop the container first; do not copy only an open WAL database file. Never commit these private runtime records or the deployment archive.
-
-For an application update, first review and test changes, build a new ARM64 image and retain the prior image tag. Stop the existing container before replacement so there is one writer. Recheck cloud freshness, selected planner and schedule readbacks after starting. Keep the database for rollback; changing an image tag alone must not reset ON/OFF intent or write history.
-
-If the NAS cannot run the controller, keep its container stopped before restarting the Mac with `main.py serve --live`. Installed inverter schedules remain until successfully changed; check them during any recovery.
+Keep the dashboard on a trusted LAN. Use a VPN or an authenticated reverse proxy for remote access; the local dashboard deliberately has no login. Router forwarding and WAN firewall settings are separate from container security.

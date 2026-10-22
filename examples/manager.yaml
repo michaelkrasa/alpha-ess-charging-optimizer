@@ -1,0 +1,28 @@
+# Starting point: observation only. Enter your hardware's verified limits.
+control_mode: legacy_daily
+standard_planner: emhass
+emhass_shadow: false
+timezone: Europe/Prague
+interval_minutes: 15
+reserve_percent: 10
+maximum_percent: 100
+charge_kw: 5
+discharge_kw: 5
+# null uses API-reported nominal capacity; calibrate only with evidence.
+effective_capacity_kwh: null
+import_limit_kw: null
+charge_efficiency: 0.95
+discharge_efficiency: 0.95
+wear_eur_per_kwh: 0.045
+exclude_inferred_grid_only_ev: false
+price_source: ote
+entsoe_area: 10YCZ-CEPS-----N
+publication_hour: 15
+# Czech tariff adapter currently requires your verified high-tariff periods.
+high_tariff_periods: null
+tariff_valid_from: null
+tariff_valid_until: null
+hold_verified: false
+device_control_verified: false
+solar_config_path: solar.local.yaml
+database_path: data/manager.sqlite3

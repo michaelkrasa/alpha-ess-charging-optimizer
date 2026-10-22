@@ -50,3 +50,7 @@ analysis/output/
 output/
 tmp/
 .venv*/
+
+# Installation-specific configuration
+manager.local.yaml
+solar.local.yaml

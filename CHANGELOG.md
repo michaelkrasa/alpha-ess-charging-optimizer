@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased — energy manager
+
+- EMHASS rolling optimization with executable AlphaESS schedule translation and readback.
+- Local dashboard with measured activity, confirmed intervals, daily prices and solar history.
+- Persistent container deployment, read-only UI preview and guarded Synology updates.
+- Public setup guides, observation-only examples, AI adaptation guide and a sourced roadmap.
+- Locked dependencies, CI and weekly Dependabot update proposals.
+
+Historical entries below describe the earlier standalone CLI; they are not validation of the current rolling manager. Current package metadata is in `pyproject.toml`.
+
 ## [v2.5.0] - 2025-12-13
 ### Added
 - Discharge validation in arbitrage cycles: Ensures discharge windows are sufficient for charged energy, using SOC gains and average load calculations with 5% buffer.

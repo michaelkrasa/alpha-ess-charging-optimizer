@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import hashlib
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -57,11 +58,15 @@ def check_image():
 
 
 def main():
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / '.env', override=False)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', default='misa@nasnas.local')
+    parser.add_argument('--host', default=os.environ.get('NAS_SSH_HOST'))
     parser.add_argument('--key', type=Path, default=Path.home() / '.ssh/id_ed25519')
     parser.add_argument('--image-only', action='store_true', help='Build a tested image for GUI import; no SSH needed')
     args = parser.parse_args()
+    if not args.image_only and not args.host:
+        parser.error('Supply --host USER@NAS, or NAS_SSH_HOST in your private .env')
     try:
         import json
         with urllib.request.urlopen('http://127.0.0.1:8765/api/state', timeout=2) as response:
@@ -104,7 +109,7 @@ def main():
         inner += ' --archive ' + shlex.quote(stage + '/alphaess.tar.gz') + ' --sha256 ' + digest(archive) + ' --image-id ' + shlex.quote(image_id)
         print('Enter your NAS password in the terminal when sudo asks. It is not saved.', flush=True)
         run(ssh + ['-t', args.host, 'sudo /bin/sh -c ' + shlex.quote(inner)])
-        print('Deployed: http://nasnas.local:8765/ — disable temporary SSH in DSM when finished.', flush=True)
+        print('Deployment verified — open port 8765 on your NAS. Disable temporary SSH in DSM when finished.', flush=True)
     finally:
         subprocess.run(ssh + [args.host, 'rm -f ' + shlex.quote(stage + '/alphaess.tar.gz') + ' ' + shlex.quote(stage + '/update.py') + '; rmdir ' + shlex.quote(stage)], capture_output=True)
 
