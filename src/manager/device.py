@@ -131,6 +131,9 @@ class AlphaDevice:
     async def power_history(self, day):
         return await self.call("getOneDayPowerBySn", self.serial, day.isoformat())
 
+    async def daily_energy(self, day):
+        return await self.call("getOneDateEnergyBySn", self.serial, day.isoformat())
+
     async def read_config(self):
         periodic = await self.call("getTimeChargeBySn", self.serial)
         native = await self.call("getDisChargeConfigInfo", self.serial)

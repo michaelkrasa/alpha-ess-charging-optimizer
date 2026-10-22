@@ -15,7 +15,7 @@ def test_price_renderer_keeps_full_day_and_draws_linear_uncompressed_spread():
     renderer = source.split("function visiblePrices()", 1)[1].split("function charts()", 1)[0]
     script = r"""
 const assert=require('node:assert/strict');
-let data={now:'2026-10-21T10:00:00+00:00'},plan=[],selectedDay='all',priceBasis='spot',hoverStamp=null;
+let data={now:'2026-10-21T10:00:00+00:00'},plan=[],observed=[],selectedDay='all',priceBasis='spot',hoverStamp=null;
 const dayKey=t=>new Date(new Date(t).getTime()+7200000).toISOString().slice(0,10);
 const targetDays=()=>({today:'2026-10-21',tomorrow:'2026-10-22'});
 const clock=t=>new Date(t).toISOString().slice(11,16),dayTitle=x=>x;
@@ -31,7 +31,7 @@ const $=()=>canvas,text=(id,value)=>{captions[id]=value};const window={devicePix
 data.price_intervals=Array.from({length:96},(_,i)=>({
 timestamp:new Date(Date.UTC(2026,9,20,22)+i*900000).toISOString(),
 spot_eur_mwh:i===32?300:i===4?200:100,import_eur_kwh:i===32?.4:.25}));
-plan=data.price_intervals.slice(49).map(r=>({...r,soc_percent:50}));
+plan=data.price_intervals.slice(49).map(r=>({...r,soc_percent:50,solar_kw:2}));
 """ + "function visiblePrices()" + renderer + r"""
 assert.equal(visiblePrices().length,96,'Morning prices must not disappear at noon');
 assert.equal(visiblePrices()[32].spot_eur_mwh,300);
@@ -55,6 +55,9 @@ const flat=priceAxis([100,100]);assert.ok(flat.max>flat.min);
 priceBasis='import';pricePlot();assert.equal(captions.priceLegend,'Your import · €/MWh');
 hoverStamp=data.price_intervals[32].timestamp;pricePlot();
 const guide=paths.find(p=>p.color==='#53625b');assert(guide&&guide.points[0][0]===guide.points[1][0],'Hover must draw a vertical time guide');
+solarForecastPlot();
+const solar=paths.find(p=>p.color==='#b57613'&&p.points.length).points;
+assert.ok(Math.abs(solar[0][0]-(46+49*slotWidth))<1e-8,'Solar forecast must share the exact price interval x axis');
 selectedDay='tomorrow';assert.equal(visiblePrices().length,0);
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True)

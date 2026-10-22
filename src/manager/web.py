@@ -17,7 +17,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, StrictBool
 
 from .controller import Controller
-from .energy_day import dashboard_energy
+from .energy_day import dashboard_daily_totals, dashboard_energy
 from .soc_tracking import dashboard_soc
 from .plan_insight import explain_plan
 from .domain import PRAGUE, day_slots, next_boundary, utc_now
@@ -293,6 +293,7 @@ def create_app(
             "telemetry": store.get("telemetry"),
             "device_connection": store.get("device_connection"),
             "energy_day": energy,
+            "daily_energy": dashboard_daily_totals(store, now),
             "soc_tracking": dashboard_soc(store, now, energy),
             "plan": plan,
             "replay": store.get("replay"),

@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import sys
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,7 +66,7 @@ def sample_state():
                      for i, r in enumerate(actual)]
     future_expected = [{'timestamp': stamp(datetime.fromisoformat(r['timestamp']) + timedelta(minutes=15)),
                         'expected_soc': r['soc_percent'], 'actual_soc': None, 'delta_pp': None, 'issued_at': stamp(now)} for r in future]
-    return {'now': stamp(now), 'soc_tracking': {'actual': actual, 'rows': past_expected + future_expected,
+    return {'now': stamp(now), 'daily_energy': {'day': now.astimezone(ZoneInfo('Europe/Prague')).date().isoformat(), 'checked_at': stamp(now), 'solar_generated_kwh': sum(r['solar_kw'] * .25 for r in measurements), 'battery_charged_kwh': sum(max(0, -r['battery_kw']) * .25 for r in measurements)}, 'soc_tracking': {'actual': actual, 'rows': past_expected + future_expected,
             'latest': past_expected[-1], 'mean_absolute_error_pp': 1.0}, 'price_intervals': prices,
             'control': {'enabled': True, 'revision': 1, 'restore_pending': False},
             'health': {'status': 'active', 'timestamp': stamp(now), 'message': 'Sample controller cycle completed.'},

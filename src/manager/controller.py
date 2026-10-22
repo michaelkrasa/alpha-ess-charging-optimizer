@@ -14,7 +14,7 @@ from .tariff import schedule_verified
 from .store import BusyError
 from .daily import plan_daily
 from .legacy_device import LegacyDevice
-from .energy_day import cache_power_history, record_measurement
+from .energy_day import cache_daily_totals, cache_power_history, record_measurement
 from .soc_tracking import capture_forecast
 
 
@@ -296,6 +296,18 @@ class Controller:
                         cache_power_history(self.store, samples, utc_now())
                 except DeviceUnavailable:
                     pass  # Keep available measurements if day-history retrieval fails.
+            totals = self.store.get('daily_energy') or {}
+            checked = totals.get('checked_at')
+            if hasattr(device, 'daily_energy') and (
+                totals.get('day') != str(utc_now().astimezone(PRAGUE).date())
+                or not checked or (utc_now() - datetime.fromisoformat(checked)).total_seconds() >= 900
+            ):
+                try:
+                    raw = await device.daily_energy(utc_now().astimezone(PRAGUE).date())
+                    if self.store.is_owner(owner):
+                        cache_daily_totals(self.store, raw, utc_now())
+                except (DeviceUnavailable, ValueError):
+                    pass  # Optional totals must not interrupt monitoring or control.
         finally:
             try:
                 if device:

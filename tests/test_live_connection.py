@@ -59,6 +59,21 @@ async def test_monitor_reads_api_without_planning_or_writing(monitor):
     c.store.acquire("next-writer")  # Lease always released.
 
 
+async def test_daily_energy_read_is_cached_without_control_writes(monitor):
+    c, d, now = monitor
+    reads = []
+    async def totals(day):
+        reads.append(day)
+        return {'theDate': str(day), 'epv': 7.9, 'eCharge': 6.5}
+    d.daily_energy = totals
+    await c.monitor_once()
+    assert c.store.get('daily_energy')['solar_generated_kwh'] == 7.9
+    c.store.put('device_connection', {'checked_at': (now-timedelta(minutes=2)).isoformat()})
+    await c.monitor_once()
+    assert len(reads) == 1
+    assert c.store.get('actuation') is None
+
+
 async def test_monitor_failure_preserves_last_success_and_is_visible(monitor):
     c, d, now = monitor
     c.store.put(

@@ -6,6 +6,8 @@ import pytest
 
 from src.manager.domain import PRAGUE, day_slots
 from src.manager.energy_day import (
+    cache_daily_totals,
+    dashboard_daily_totals,
     cache_power_history,
     dashboard_energy,
     record_measurement,
@@ -15,6 +17,25 @@ from src.manager.store import SQLiteStore
 
 def row(t, load=2):
     return {"timestamp": t.isoformat(), "load_kw": load, "solar_kw": 1}
+
+
+def test_daily_meter_totals_keep_sources_separate_and_reset_at_local_midnight(tmp_path):
+    store = SQLiteStore(tmp_path / 'totals.db')
+    now = datetime(2026, 10, 22, 18, tzinfo=PRAGUE)
+    cache_daily_totals(store, {'theDate': '2026-10-22', 'epv': '7.9',
+                              'eCharge': 6.5, 'eGridCharge': 3.7, 'sysSn': 'private'}, now)
+    result = dashboard_daily_totals(store, now)
+    assert result['solar_generated_kwh'] == 7.9
+    assert result['battery_charged_kwh'] == 6.5
+    assert result['grid_charged_kwh'] == 3.7
+    assert 'sysSn' not in result
+    assert dashboard_daily_totals(store, now + timedelta(days=1)) is None
+    with pytest.raises(ValueError, match='requested local day'):
+        cache_daily_totals(store, {'theDate': '2026-10-21', 'epv': 20}, now)
+    cache_daily_totals(store, {'theDate': '2026-10-22', 'epv': None,
+                              'eCharge': -1, 'eGridCharge': 'nan'}, now)
+    assert 'solar_generated_kwh' not in dashboard_daily_totals(store, now)
+    assert 'battery_charged_kwh' not in dashboard_daily_totals(store, now)
 
 
 def test_daily_series_sorts_deduplicates_and_omits_other_days_and_future(tmp_path):

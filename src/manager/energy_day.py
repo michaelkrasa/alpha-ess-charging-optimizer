@@ -6,6 +6,27 @@ from datetime import datetime, timedelta
 from .domain import PRAGUE, UTC, day_slots
 
 
+def cache_daily_totals(store, raw, now):
+    day = str(now.astimezone(PRAGUE).date())
+    if not isinstance(raw, dict) or str(raw.get('theDate', ''))[:10] != day:
+        raise ValueError('Daily energy response does not match the requested local day')
+    values = {}
+    for source, target in [('epv', 'solar_generated_kwh'), ('eCharge', 'battery_charged_kwh'),
+                           ('eGridCharge', 'grid_charged_kwh')]:
+        try:
+            value = float(raw[source])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            values[target] = value
+    store.put('daily_energy', {'day': day, 'checked_at': now.isoformat(), **values})
+
+
+def dashboard_daily_totals(store, now):
+    totals = store.get('daily_energy') or {}
+    return totals if totals.get('day') == str(now.astimezone(PRAGUE).date()) else None
+
+
 def day_measurements(rows, now):
     day = now.astimezone(PRAGUE).date()
     found = {}
