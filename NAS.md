@@ -64,6 +64,16 @@ sudo docker compose --env-file .env -f compose.nas.yaml -f compose.nas.live.yaml
 
 Turning dashboard control OFF requests native inverter settings; stopping the container alone does not cancel installed schedules. A cloud outage also does not clear repeating schedules.
 
+## Credential handling
+
+Compose reads the host `.env` and injects `APP_ID`, `APP_SECRET` and `SERIAL_NUMBER` at container creation. The NAS `.env` is root-owned with mode `0600`, inside the root-owned deployment directory with mode `0700`. It is not bind-mounted into the container. The image Dockerfile copies only application/configuration sources, and `.dockerignore` excludes `.env` and `.env.*` from the build context. Git ignores environment files, including named variants, while tracking `.env.example` placeholders.
+
+This is permission-protected plaintext storage, not encrypted Docker Secrets. Root and administrators with Docker access can inspect the credentials in container metadata, including Container Manager's environment view. The application necessarily receives them in its environment. An unprivileged container process and read-only filesystem reduce other access, but do not create a secret boundary against NAS administrators or a compromised application.
+
+The public dashboard state does not return API credentials. Upstream AlphaESS logging is suppressed at the application entry point because SDK error messages can contain device identifiers. Keep raw container configuration/inspect output private; it can contain credential values. Credential-bearing transfer archives were removed from both NAS staging locations after successful commissioning, and the remaining local temporary archive was also removed. The original private Mac `.env` remains mode `0600` for authorized local recovery.
+
+To rotate credentials, obtain replacements through the AlphaESS developer account, edit the NAS `.env` privately as an administrator, and recreate the container using the same Compose files. A plain container restart does not reload changed Compose environment variables. Keep the old controller stopped during this operation and verify fresh cloud contact afterwards. Encrypt any backups containing `.env`; never include them in Git or dashboard screenshots.
+
 ## Boot recovery and DSM updates
 
 The root boot hook is `/usr/local/etc/rc.d/S99alphaess-recover.sh`. It waits 60 seconds and invokes `ops/nas/recover.py`. The recovery command was run successfully again after installation to test idempotence. **An actual NAS reboot and a future DSM upgrade have not been tested.** DSM may change or remove custom startup hooks during upgrades; automatic operation cannot be guaranteed across arbitrary future releases.

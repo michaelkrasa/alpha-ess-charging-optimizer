@@ -28,6 +28,8 @@ logs/
 
 # Environment files with secrets
 .env
+.env.*
+!.env.example
 
 # Data
 data/
