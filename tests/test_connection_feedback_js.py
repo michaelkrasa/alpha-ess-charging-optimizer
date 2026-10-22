@@ -48,3 +48,27 @@ assert.equal(values.monitorStatus,'Checking connection');
     )
     result = subprocess.run([node, "-e", script], text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+def test_heartbeat_warning_clears_on_reconnect_without_hiding_command_errors():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for dashboard checks")
+    source = Path("src/manager/dashboard.html").read_text()
+    function = "async function refresh()" + source.split("async function refresh()", 1)[1].split("$('toggle').onclick", 1)[0]
+    script = r"""
+const assert=require('node:assert/strict');
+const values={commandError:'A control request failed'},elements={monitorDot:{className:''}};
+const text=(id,value)=>values[id]=value,$=id=>elements[id];
+let fail=true,rendered=0;
+const render=()=>rendered++;
+const fetch=async()=>{if(fail)throw Object.assign(new Error('timeout'),{name:'AbortError'});return {ok:true,json:async()=>({})}};
+""" + function + r"""
+(async()=>{
+await refresh();assert.match(values.connectionError,/timed out/);assert.equal(rendered,0);
+fail=false;await refresh();assert.equal(values.connectionError,'');assert.equal(rendered,1);
+assert.equal(values.commandError,'A control request failed');
+})().catch(error=>{console.error(error);process.exit(1)});
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

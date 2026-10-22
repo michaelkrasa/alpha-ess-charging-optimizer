@@ -121,6 +121,13 @@ Docker-published ports need their own exposure review; a DSM SSH rule is not pro
 
 ## Backups, updates and rollback
 
+Use `./scripts/deploy-nas.sh` from the Mac repository for regular updates after local preview verification. Enable SSH temporarily in DSM first, and disable it afterwards. The existing Mac key and Mac-only firewall rule are reused; sudo still requires the administrator password in the terminal. The command never copies or prints the NAS `.env`.
+
+The image-only build and GUI replacement path have been exercised on this NAS. The updater’s rollback and fresh-cycle checks have automated tests; its complete SSH/sudo invocation has not yet been exercised with SSH disabled.
+
+The updater saves a consistent root-only SQLite backup under `backups/`, keeps the previous image as `alphaess-household:rollback`, and writes a sanitized `last-update.json` on success. It checks new-process cycle/contact timestamps rather than accepting cached pre-restart health. If validation fails, it restores the previous image and verifies recovery. Image rollback preserves the current database; it does not automatically undo future schema migrations. For GUI-only imports, use `--image-only` and the Stop/Reset/Start flow in the project README.
+
+
 Back up `manager.yaml`, `solar_config.yaml`, the private `.env`, recovery approval files and SQLite state. Use SQLite's backup API or stop the container first; do not copy only an open WAL database file. Never commit these private runtime records or the deployment archive.
 
 For an application update, first review and test changes, build a new ARM64 image and retain the prior image tag. Stop the existing container before replacement so there is one writer. Recheck cloud freshness, selected planner and schedule readbacks after starting. Keep the database for rollback; changing an image tag alone must not reset ON/OFF intent or write history.

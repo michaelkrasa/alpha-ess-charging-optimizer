@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Test and build locally, then deploy over temporary key-authenticated SSH."""
+import argparse
+import gzip
+import hashlib
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+IMAGE = 'alphaess-household:local'
+
+
+def run(command, **options):
+    return subprocess.run(command, check=True, cwd=ROOT, **options)
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with path.open('rb') as source:
+        for block in iter(lambda: source.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def exported_image_id(archive):
+    # Docker Desktop may expose an index ID; the NAS uses the image config ID.
+    import json
+    with tarfile.open(archive, 'r:gz') as saved:
+        manifest = json.load(saved.extractfile('manifest.json'))
+        selected = next(m for m in manifest if IMAGE in (m.get('RepoTags') or []))
+        return 'sha256:' + hashlib.sha256(saved.extractfile(selected['Config']).read()).hexdigest()
+
+
+def check_image():
+    name = 'alphaess-check-' + str(time.time_ns())
+    run(['docker', 'run', '-d', '--name', name, '--network', 'none', '--read-only',
+         '--tmpfs', '/tmp:mode=1777,size=128m',
+         '--tmpfs', '/app/data:uid=10001,gid=10001,mode=0700,size=32m', IMAGE], stdout=subprocess.DEVNULL)
+    try:
+        expected = digest(ROOT / 'src/manager/dashboard.html')
+        code = "import urllib.request,hashlib,emhass,highspy; assert hashlib.sha256(urllib.request.urlopen('http://127.0.0.1:8765/',timeout=3).read()).hexdigest() == " + repr(expected)
+        for _ in range(30):
+            checked = subprocess.run(['docker', 'exec', name, 'python', '-c', code], capture_output=True)
+            if checked.returncode == 0:
+                return
+            time.sleep(1)
+        raise RuntimeError('The isolated image did not serve the tested dashboard')
+    finally:
+        run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--host', default='misa@nasnas.local')
+    parser.add_argument('--key', type=Path, default=Path.home() / '.ssh/id_ed25519')
+    parser.add_argument('--image-only', action='store_true', help='Build a tested image for GUI import; no SSH needed')
+    args = parser.parse_args()
+    try:
+        import json
+        with urllib.request.urlopen('http://127.0.0.1:8765/api/state', timeout=2) as response:
+            local = json.load(response)
+        if local.get('live') and local.get('control', {}).get('enabled'):
+            raise SystemExit('Stop the active Mac controller first; the NAS must be the only writer.')
+    except (OSError, ValueError):
+        pass
+    run([sys.executable, '-m', 'pytest', 'tests/', '-q'])
+    run(['docker', 'build', '--platform', 'linux/arm64', '-f', 'Dockerfile.nas', '-t', IMAGE, '.'])
+    check_image()
+    destination = ROOT / 'dist/nas'
+    destination.mkdir(parents=True, exist_ok=True)
+    archive = destination / 'alphaess.tar.gz'
+    with gzip.open(archive, 'wb', compresslevel=1) as output:
+        saving = subprocess.Popen(['docker', 'save', IMAGE], stdout=subprocess.PIPE)
+        try:
+            shutil.copyfileobj(saving.stdout, output)
+        finally:
+            saving.stdout.close()
+        if saving.wait():
+            raise RuntimeError('Image export failed')
+    print('Tested ARM64 image: ' + str(archive), flush=True)
+    if args.image_only:
+        return
+    ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=5', '-i', str(args.key)]
+    try:
+        result = run(ssh + [args.host, 'umask 077; mktemp -d /volume1/@tmp/alphaess-update-XXXXXXXX'], capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit('SSH is unavailable. Enable it temporarily in DSM > Control Panel > Terminal & SNMP, then rerun. The tested image is already built.') from exc
+    stage = result.stdout.strip()
+    if not stage.startswith('/volume1/@tmp/alphaess-update-') or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-@_' for c in stage):
+        raise RuntimeError('Unexpected NAS staging directory')
+    updater = ROOT / 'ops/nas/update.py'
+    try:
+        run(['scp', '-O', '-q', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-i', str(args.key),
+             str(archive), str(updater), args.host + ':' + stage + '/'])
+        image_id = exported_image_id(archive)
+        inner = 'echo ' + shlex.quote(digest(updater) + '  ' + stage + '/update.py') + ' | sha256sum -c - && exec /usr/bin/python3 ' + shlex.quote(stage + '/update.py')
+        inner += ' --archive ' + shlex.quote(stage + '/alphaess.tar.gz') + ' --sha256 ' + digest(archive) + ' --image-id ' + shlex.quote(image_id)
+        print('Enter your NAS password in the terminal when sudo asks. It is not saved.', flush=True)
+        run(ssh + ['-t', args.host, 'sudo /bin/sh -c ' + shlex.quote(inner)])
+        print('Deployed: http://nasnas.local:8765/ — disable temporary SSH in DSM when finished.', flush=True)
+    finally:
+        subprocess.run(ssh + [args.host, 'rm -f ' + shlex.quote(stage + '/alphaess.tar.gz') + ' ' + shlex.quote(stage + '/update.py') + '; rmdir ' + shlex.quote(stage)], capture_output=True)
+
+
+if __name__ == '__main__':
+    main()

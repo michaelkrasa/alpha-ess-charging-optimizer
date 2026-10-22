@@ -85,6 +85,34 @@ uv run --extra emhass python main.py replay --date 2025-12-10 --power-file /path
 
 `once` without `--live` never changes the inverter. `main.py` is the application entry point. `src.optimizer` is the historical standalone optimizer, retained for comparison.
 
+## Verify UI changes locally
+
+```bash
+uv run --extra emhass python scripts/preview-dashboard.py
+```
+
+Open **http://127.0.0.1:8766/**. It serves the local dashboard source and reads live state from the NAS. POST/control requests are blocked, so the NAS remains the only inverter controller. Reload the browser after editing HTML/CSS. Verify this preview before deploying.
+
+## Update the household NAS
+
+With Docker Desktop running, temporarily enable SSH in DSM **Control Panel → Terminal & SNMP**, then run:
+
+```bash
+./scripts/deploy-nas.sh
+```
+
+Enter the NAS administrator password when `sudo` asks. It is not saved. The script runs the test suite, builds an ARM64 image, checks it in an isolated local container, transfers it using your SSH key, backs up SQLite and replaces the NAS container. It preserves the NAS credentials, settings and ON/OFF intent. Success requires fresh cloud contact and a successful controller cycle from the new process; failed updates restore and verify the prior image. Disable SSH in DSM when finished.
+
+The default SSH destination is `misa@nasnas.local`; use `--host user@host` and `--key /path/to/key` for another authorized account. If SSH is unavailable, the script stops without changing the NAS and retains the tested image.
+
+For a GUI-only update with SSH kept disabled:
+
+```bash
+./scripts/deploy-nas.sh --image-only
+```
+
+Import `dist/nas/alphaess.tar.gz` in **Container Manager → Image → Action → Import → Add From File → From local device**. Then open the `alphaess-household` container, **Stop → Action → Reset → Start**. This replaces its image while retaining the existing bind-mounted database/configuration. Check fresh telemetry and settings confirmation afterwards. Keep a known-good image before a GUI replacement. The SSH command is preferred because it tags the previous image, verifies the result and automates rollback.
+
 ## Run with Docker / Synology
 
 Use **`Dockerfile.nas`**, not the Lambda Dockerfile. The container includes EMHASS and runs as UID/GID `10001`, with a read-only root filesystem, writable `/tmp`, bounded logs and persistent SQLite state.
@@ -126,7 +154,7 @@ The standard API's maximum endpoint is 23:45, so it cannot represent the final q
 
 ## Validation
 
-The current suite has **580 passing tests and 131 skips**. It covers actual EMHASS solves, executable schedules, energy accounting, EV separation, forecast causality, price/time alignment, reserve constraints, stale data, control leases, partial writes, dashboard feedback and bounded NAS recovery. Skips belong to existing historical price-window cases; they are not successful checks.
+The current suite has **586 passing tests and 131 skips**. It covers actual EMHASS solves, executable schedules, energy accounting, EV separation, forecast causality, price/time alignment, reserve constraints, stale data, control leases, partial writes, dashboard feedback and bounded NAS recovery. Skips belong to existing historical price-window cases; they are not successful checks.
 
 ```bash
 uv run --extra emhass --extra dev pytest tests/ -q
