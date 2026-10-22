@@ -50,6 +50,8 @@ def check_image():
         for _ in range(30):
             checked = subprocess.run(['docker', 'exec', name, 'python', '-c', code], capture_output=True)
             if checked.returncode == 0:
+                run(['docker', 'exec', name, 'python', '-c',
+                     (ROOT / 'scripts/check-container-planners.py').read_text()])
                 return
             time.sleep(1)
         raise RuntimeError('The isolated image did not serve the tested dashboard')

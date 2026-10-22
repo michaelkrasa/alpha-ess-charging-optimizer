@@ -673,4 +673,6 @@ class Controller:
 def safe_error(exc):
     if isinstance(exc, (DeviceUnavailable, ValueError)):
         return str(exc)
+    if isinstance(exc, ModuleNotFoundError):
+        return 'ModuleNotFoundError: required Python module missing from runtime package'
     return f"{type(exc).__name__}: external service or local operation failed"

@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libstd
 RUN pip install --no-cache-dir --only-binary=:all: -r requirements-server.txt \
     && useradd --uid 10001 --create-home manager \
     && mkdir data && chown manager:manager data
-COPY main.py manager.yaml solar_config.yaml ./
+COPY main.py config.py manager.yaml solar_config.yaml ./
 COPY src/ ./src/
 USER manager
 EXPOSE 8765
