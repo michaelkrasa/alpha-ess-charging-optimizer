@@ -19,6 +19,8 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen --extra emhass --extra dev --python 3.12
       - run: uv run --frozen --extra emhass --extra dev pytest tests/ -q
+      - name: Check demo matches the dashboard
+        run: python scripts/build-demo.py --check
       - name: Check container dependency export
         run: |
           uv export --frozen --extra emhass --no-dev --no-emit-project --no-hashes -o /tmp/requirements-server.txt

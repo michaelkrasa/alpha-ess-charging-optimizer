@@ -11,9 +11,11 @@
 
 A self-hosted battery manager that connects **[EMHASS](https://github.com/davidusb-geek/emhass)** rolling optimization to **AlphaESS**, day-ahead electricity prices and a clear, tablet-friendly dashboard. No Home Assistant required.
 
-[Get started](#get-started) · [Deployment](#run-it-your-way) · [Adapt with AI](docs/ADAPTING.md) · [Roadmap](analysis/project_roadmap.md)
+[Explore the demo](https://michaelkrasa.github.io/alpha-ess-charging-optimizer/) · [Get started](#get-started) · [Deployment](#run-it-your-way) · [Adapt with AI](docs/ADAPTING.md) · [Roadmap](analysis/project_roadmap.md)
 
-<img src="docs/images/dashboard.png" width="700" alt="Dashboard with automatic management, battery charge, amber solar generation and daily import price statistics">
+### [Open the interactive dashboard →](https://michaelkrasa.github.io/alpha-ess-charging-optimizer/)
+
+Full-size charts. Today and tomorrow. Try the controls. **Synthetic data; no account required.**
 
 </div>
 
@@ -29,14 +31,8 @@ Charge when the expected savings justify it. Keep energy for expensive periods. 
 | Automatic management ON/OFF and connection freshness | Proposed actions beside settings read back from the inverter |
 | Next import price, daily min/max/mean | Solar and site demand filling in from midnight |
 
-<details>
-<summary><strong>Explore the price and schedule view</strong></summary>
+[Explore the dashboard in your browser →](https://michaelkrasa.github.io/alpha-ess-charging-optimizer/) Switch days, inspect prices, expand the schedule, and try ON/OFF. The sample uses the real dashboard with synthetic data. It works on desktop, tablet and phone, and can be downloaded as one self-contained HTML file.
 
-<img src="docs/images/price-and-plan.png" width="800" alt="Daily inverter schedule compared with the proposed plan, market prices and projected battery SOC">
-
-Screenshots show an example installation at the recorded time; prices and battery behavior vary by site.
-
-</details>
 
 ## How it works
 
