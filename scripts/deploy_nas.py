@@ -57,6 +57,47 @@ def check_image():
         run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL)
 
 
+def setup_helper(ssh, host, key):
+    result = run(ssh + [host, 'umask 077; mktemp -d /volume1/@tmp/alphaess-setup-XXXXXXXX'], capture_output=True, text=True)
+    stage = result.stdout.strip()
+    if not stage.startswith('/volume1/@tmp/alphaess-setup-') or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-@_' for c in stage):
+        raise RuntimeError('Unexpected NAS setup directory')
+    user = run(ssh + [host, 'id -un'], capture_output=True, text=True).stdout.strip()
+    files = [ROOT / 'ops/nas' / name for name in ('update.py', 'receive.py', 'install_deploy.py')]
+    try:
+        run(['scp', '-O', '-q', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-i', str(key),
+             *(str(p) for p in files), host + ':' + stage + '/'])
+        lines = ''.join(digest(p) + '  ' + stage + '/' + p.name + '\n' for p in files)
+        inner = 'printf %s ' + shlex.quote(lines) + ' | sha256sum -c - && exec /usr/bin/python3 -I '
+        inner += shlex.quote(stage + '/install_deploy.py') + ' --user ' + shlex.quote(user)
+        print('One-time authorization: enter your NAS password. Future updates will not prompt.', flush=True)
+        run(ssh + ['-t', host, 'sudo /bin/sh -c ' + shlex.quote(inner)])
+        run(ssh + [host, 'sudo -n -l /usr/local/sbin/alphaess-update'], stdout=subprocess.DEVNULL)
+        print('Setup complete. Keep SSH restricted to the trusted deployment computer on the LAN.', flush=True)
+    finally:
+        paths = ' '.join(shlex.quote(stage + '/' + p.name) for p in files)
+        subprocess.run(ssh + [host, 'rm -f ' + paths + '; rmdir ' + shlex.quote(stage)], capture_output=True)
+
+
+def send_image(ssh, host, archive):
+    import json
+    header = json.dumps({'size': archive.stat().st_size, 'sha256': digest(archive),
+                         'image_id': exported_image_id(archive)}).encode() + b'\n'
+    # No remote paths, uploaded scripts or shell expressions are accepted by the helper.
+    process = subprocess.Popen(ssh + [host, 'sudo -n /usr/local/sbin/alphaess-update'], stdin=subprocess.PIPE, cwd=ROOT)
+    try:
+        process.stdin.write(header)
+        with archive.open('rb') as source:
+            shutil.copyfileobj(source, process.stdin)
+        process.stdin.close()
+    except BaseException:
+        process.stdin.close()
+        process.wait()
+        raise
+    if process.wait():
+        raise RuntimeError('NAS deployment failed; review the updater output above')
+
+
 def main():
     from dotenv import load_dotenv
     load_dotenv(ROOT / '.env', override=False)
@@ -64,9 +105,20 @@ def main():
     parser.add_argument('--host', default=os.environ.get('NAS_SSH_HOST'))
     parser.add_argument('--key', type=Path, default=Path.home() / '.ssh/id_ed25519')
     parser.add_argument('--image-only', action='store_true', help='Build a tested image for GUI import; no SSH needed')
+    parser.add_argument('--setup', action='store_true', help='One-time installation of the restricted passwordless updater')
     args = parser.parse_args()
+    ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=5', '-i', str(args.key)]
     if not args.image_only and not args.host:
         parser.error('Supply --host USER@NAS, or NAS_SSH_HOST in your private .env')
+    if args.setup:
+        if args.image_only:
+            parser.error('--setup and --image-only are separate operations')
+        setup_helper(ssh, args.host, args.key)
+        return
+    if not args.image_only:
+        check = subprocess.run(ssh + [args.host, 'test -x /usr/local/sbin/alphaess-update'], capture_output=True)
+        if check.returncode:
+            raise SystemExit('NAS updater unavailable. Enable LAN-only SSH and run ./scripts/deploy-nas.sh --setup once.')
     try:
         import json
         with urllib.request.urlopen('http://127.0.0.1:8765/api/state', timeout=2) as response:
@@ -92,26 +144,8 @@ def main():
     print('Tested ARM64 image: ' + str(archive), flush=True)
     if args.image_only:
         return
-    ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=5', '-i', str(args.key)]
-    try:
-        result = run(ssh + [args.host, 'umask 077; mktemp -d /volume1/@tmp/alphaess-update-XXXXXXXX'], capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        raise SystemExit('SSH is unavailable. Enable it temporarily in DSM > Control Panel > Terminal & SNMP, then rerun. The tested image is already built.') from exc
-    stage = result.stdout.strip()
-    if not stage.startswith('/volume1/@tmp/alphaess-update-') or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-@_' for c in stage):
-        raise RuntimeError('Unexpected NAS staging directory')
-    updater = ROOT / 'ops/nas/update.py'
-    try:
-        run(['scp', '-O', '-q', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-i', str(args.key),
-             str(archive), str(updater), args.host + ':' + stage + '/'])
-        image_id = exported_image_id(archive)
-        inner = 'echo ' + shlex.quote(digest(updater) + '  ' + stage + '/update.py') + ' | sha256sum -c - && exec /usr/bin/python3 ' + shlex.quote(stage + '/update.py')
-        inner += ' --archive ' + shlex.quote(stage + '/alphaess.tar.gz') + ' --sha256 ' + digest(archive) + ' --image-id ' + shlex.quote(image_id)
-        print('Enter your NAS password in the terminal when sudo asks. It is not saved.', flush=True)
-        run(ssh + ['-t', args.host, 'sudo /bin/sh -c ' + shlex.quote(inner)])
-        print('Deployment verified — open port 8765 on your NAS. Disable temporary SSH in DSM when finished.', flush=True)
-    finally:
-        subprocess.run(ssh + [args.host, 'rm -f ' + shlex.quote(stage + '/alphaess.tar.gz') + ' ' + shlex.quote(stage + '/update.py') + '; rmdir ' + shlex.quote(stage)], capture_output=True)
+    send_image(ssh, args.host, archive)
+    print('Deployment verified — open port 8765 on your NAS.', flush=True)
 
 
 if __name__ == '__main__':

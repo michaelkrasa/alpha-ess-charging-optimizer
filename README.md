@@ -81,7 +81,7 @@ Open **[localhost:8765](http://127.0.0.1:8765)**. This starts in observation mod
 
 **Docker is the simplest always-on option.** [Container / NAS setup](NAS.md) · [AWS status](docs/DEPLOYMENT.md)
 
-For an already commissioned Synology installation, the update command tests and builds locally, backs up state, deploys, and checks a fresh controller cycle:
+For an already commissioned Synology installation, [authorize the fixed updater once](NAS.md#one-time-authorization). Future updates need one command and no password prompt; it tests and builds locally, backs up state, deploys, and checks a fresh controller cycle:
 
 ```bash
 ./scripts/deploy-nas.sh --host YOUR_USER@YOUR_NAS

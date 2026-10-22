@@ -37,28 +37,37 @@ Synology Container Manager can import the Compose project instead. The image use
 
 Updates are deliberate deployments of a tested container image; a Git push or Dependabot PR does not change the running NAS service. The source is built on the development computer, then the NAS container is replaced while its bind-mounted database, private credentials and installation settings remain in place.
 
-For a normal update, enable SSH temporarily in DSM **Control Panel → Terminal & SNMP**, start Docker on the development computer, then:
+### One-time authorization
+
+Enable SSH in DSM **Control Panel → Terminal & SNMP**. Keep it reachable only from your trusted deployment computer using the NAS firewall; use a reserved LAN address and no router port forwarding. Save `NAS_SSH_HOST=YOUR_USER@YOUR_NAS` in your private `.env`, then:
 
 ```bash
-git pull --ff-only
+./scripts/deploy-nas.sh --setup
+```
+
+Enter the NAS administrator password once. This installs a root-owned updater and a narrow sudo rule: only `/usr/local/sbin/alphaess-update` **with no arguments** is passwordless. The helper accepts a bounded image upload over stdin, validates its SHA-256 and Docker image identity, and uses the existing root-owned Compose configuration. It does not execute uploaded Python, accept shell commands or grant general passwordless sudo. The deployment computer and its SSH key are trusted to replace this app; protect that key.
+
+The installer checks that DSM includes `/etc/sudoers.d` and validates the new rule with `visudo`. If that integration is unavailable it stops instead of editing the main sudo policy. It does not enable SSH or alter firewall rules. Check the helper after DSM updates; reinstall with `--setup` if removed. Changes to the privileged updater itself also require rerunning setup deliberately.
+
+### Every update afterwards
+
+Start Docker on the development computer, then:
+
+```bash
 ./scripts/deploy-nas.sh
 ```
 
-The short command uses `NAS_SSH_HOST` from your private `.env`. It prompts for the NAS administrator password at the privileged replacement step. Disable temporary SSH after successful verification. For explicit connection details:
+There is no password prompt. The command runs tests, builds Linux ARM64, smoke-tests the image without credentials/network access, streams it through SSH, backs up SQLite and recreates the container. A successful update requires a fresh controller cycle and cloud contact while preserving ON/OFF intent. A failed check restores the prior image and checks it again. If the prior controller is also unhealthy, the command reports failure; rollback is not proof of health.
+
+A Git push does not deploy automatically. Pull reviewed changes before deploying a newer release. To specify the connection explicitly:
 
 ```bash
-./scripts/deploy-nas.sh --host YOUR_USER@YOUR_NAS
-# Optional custom SSH key:
 ./scripts/deploy-nas.sh --host YOUR_USER@YOUR_NAS --key ~/.ssh/id_ed25519
 ```
 
-To keep future updates to `./scripts/deploy-nas.sh`, save `NAS_SSH_HOST=YOUR_USER@YOUR_NAS` in your private `.env`.
+This unattended path leaves LAN-restricted SSH enabled. If you prefer disabling SSH between updates, enable it before running the command and disable it afterwards; the installed helper still removes repeated sudo prompts. To revoke passwordless deployment, remove `/etc/sudoers.d/alphaess-update` as administrator and remove the helper/install directory if no longer needed.
 
-The updater currently expects `/volume1/docker/alphaess-household`, Compose project `alphaess-household`, root-owned configuration and a `nas-live.enabled` marker for live mode. It targets that commissioned layout, not every Docker host. Generic Compose installations can use their normal build/recreate process instead.
-
-The command runs tests, builds Linux ARM64, smoke-tests the image without credentials/network access, transfers through SSH, backs up SQLite and recreates the container. A successful update requires a fresh controller cycle and cloud contact while preserving ON/OFF intent. A failed check restores the prior image and checks it again. If the prior controller is also unhealthy, the command reports failure; rollback is not proof of health.
-
-The NAS administrator enters a password when `sudo` asks; neither the script nor the image stores it. For a temporary maintenance session, disable SSH afterwards. App updates do not require a DSM root task or a Container Manager installation workaround.
+The updater currently expects `/volume1/docker/alphaess-household`, Compose project `alphaess-household`, root-owned configuration and a `nas-live.enabled` marker for live mode. It targets that commissioned layout, not every Docker host. Generic Compose installations can use their normal build/recreate process instead. The setup itself needs target-host verification before treating this shortcut as commissioned.
 
 ### GUI import alternative
 

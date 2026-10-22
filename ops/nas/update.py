@@ -96,14 +96,9 @@ def update(app, archive, expected_id, runner=run, verify=wait_for_cycle):
         raise RuntimeError('Update failed; previous image restored and verified') from failure
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--archive', required=True, type=Path)
-    parser.add_argument('--sha256', required=True)
-    parser.add_argument('--image-id', required=True)
-    args = parser.parse_args()
+def apply_archive(archive, sha256, image_id):
     if os.geteuid() != 0:
-        parser.error('Run through sudo')
+        raise RuntimeError('Run through sudo')
     for path in (APP, APP / '.env', APP / 'compose.nas.yaml', APP / 'compose.nas.live.yaml'):
         stat = path.stat()
         if path.is_symlink() or stat.st_uid != 0 or stat.st_mode & 0o022:
@@ -113,8 +108,8 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix='update-', dir=APP) as work:
             copied = Path(work) / 'image.tar.gz'
-            shutil.copyfile(args.archive, copied)
-            if digest(copied) != args.sha256:
+            shutil.copyfile(archive, copied)
+            if digest(copied) != sha256:
                 raise RuntimeError('Image archive checksum mismatch; no container changes made')
             backups = APP / 'backups'
             backups.mkdir(mode=0o700, exist_ok=True)
@@ -122,10 +117,19 @@ def main():
             with sqlite3.connect(str(APP / 'data/manager.sqlite3')) as source, sqlite3.connect(str(target)) as destination:
                 source.backup(destination)
             target.chmod(0o600)
-            result = update(APP, copied, args.image_id)
+            result = update(APP, copied, image_id)
             result['checked_at'] = datetime.now(timezone.utc).isoformat()
             (APP / 'last-update.json').write_text(json.dumps(result, indent=2) + '\n')
             print(json.dumps(result))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--archive', required=True, type=Path)
+    parser.add_argument('--sha256', required=True)
+    parser.add_argument('--image-id', required=True)
+    args = parser.parse_args()
+    apply_archive(args.archive, args.sha256, args.image_id)
 
 
 if __name__ == '__main__':

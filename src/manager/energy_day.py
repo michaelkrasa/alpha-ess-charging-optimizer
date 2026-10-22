@@ -20,14 +20,18 @@ def day_measurements(rows, now):
                 or not all(math.isfinite(v) and v >= 0 for v in (load, solar))
             ):
                 continue
-            found[t.astimezone(UTC).isoformat()] = {
+            key = t.astimezone(UTC).isoformat()
+            previous_soc = found.get(key, {}).get("soc_percent")
+            found[key] = {
                 "timestamp": t.astimezone(UTC).isoformat(),
                 "load_kw": load,
                 "solar_kw": solar,
             }
             soc = row.get("soc_percent")
+            if not isinstance(soc, (int, float)) or not math.isfinite(soc) or not 0 <= soc <= 100:
+                soc = previous_soc
             if isinstance(soc, (int, float)) and math.isfinite(soc) and 0 <= soc <= 100:
-                found[t.astimezone(UTC).isoformat()]["soc_percent"] = float(soc)
+                found[key]["soc_percent"] = float(soc)
         except (ValueError, TypeError, KeyError):
             continue
     return [found[t] for t in sorted(found)]

@@ -41,3 +41,12 @@ def test_history_cbat_soc_is_preserved_and_invalid_soc_is_omitted(tmp_path):
     energy=dashboard_energy(store,now,[])
     assert energy['rows'][0]['soc_percent']==63.2
     assert store.get('energy_day')['soc_history_backfilled']
+
+
+def test_soc_backfill_survives_duplicate_power_only_measurements(tmp_path):
+    from src.manager.energy_day import cache_power_history, dashboard_energy
+    store=SQLiteStore(tmp_path/'day.db');now=datetime(2026,10,22,12,tzinfo=PRAGUE)
+    store.put('energy_day',{'day':'2026-10-22','rows':[{
+        'timestamp':'2026-10-22T11:58:00+02:00','load_kw':1,'solar_kw':2}]})
+    cache_power_history(store,[{'uploadTime':'2026-10-22 11:58:00','load':1000,'ppv':2000,'cbat':63.2}],now)
+    assert dashboard_energy(store,now,[])['rows'][0]['soc_percent']==63.2
