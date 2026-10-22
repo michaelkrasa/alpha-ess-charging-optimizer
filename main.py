@@ -1,4 +1,4 @@
-from src.optimizer import cli
+from src.manager.cli import cli
 
 
 if __name__ == "__main__":

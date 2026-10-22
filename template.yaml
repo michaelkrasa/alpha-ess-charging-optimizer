@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Household battery manager. Bounded provisioned DynamoDB and one scheduled Lambda.
+Parameters:
+  ScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [DISABLED, ENABLED]
+  DashboardPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 20
+  AppId:
+    Type: String
+    NoEcho: true
+  AppSecret:
+    Type: String
+    NoEcho: true
+  SerialNumber:
+    Type: String
+    NoEcho: true
+  LiveControl:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+Resources:
+  History:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: HouseholdState
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:Query]
+                Resource: !GetAtt History.Arn
+      # No CloudWatch logging policy: status/history live in DynamoDB. This avoids
+      # uncontrolled log ingestion and retention charges for the core service.
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: index.lambda_handler
+      Role: !GetAtt FunctionRole.Arn
+      # Bootstrap only. Upload build/household-manager.zip directly to the
+      # created function, then enable the schedule. No artifact bucket needed.
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "package_not_installed", "live": False}
+      Timeout: 180
+      MemorySize: 512
+      # Keep control requests responsive during scheduled reads. The database
+      # lease serializes device operations across instances.
+      ReservedConcurrentExecutions: 2
+      Environment:
+        Variables:
+          APP_ID: !Ref AppId
+          APP_SECRET: !Ref AppSecret
+          SERIAL_NUMBER: !Ref SerialNumber
+          DASHBOARD_PASSWORD: !Ref DashboardPassword
+          DYNAMODB_TABLE: !Ref History
+          MANAGER_LIVE: !Ref LiveControl
+  FunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref Function
+      AuthType: NONE
+      InvokeMode: BUFFERED
+      # Application enforces HTTP Basic on every page and control route.
+      # No CORS policy: cross-origin writes are rejected.
+  PublicUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+  PublicInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: scheduler.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeHouseholdManager
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt Function.Arn
+  Tick:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      ScheduleExpression: cron(0/15 * * * ? *)
+      State: !Ref ScheduleState
+      ScheduleExpressionTimezone: Europe/Prague
+      FlexibleTimeWindow: {Mode: 'OFF'}
+      Target:
+        Arn: !GetAtt Function.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{}'
+        RetryPolicy: {MaximumEventAgeInSeconds: 300, MaximumRetryAttempts: 0}
+Outputs:
+  DashboardUrl:
+    Value: !GetAtt FunctionUrl.FunctionUrl
+  TableName:
+    Value: !Ref History
+  FunctionName:
+    Value: !Ref Function

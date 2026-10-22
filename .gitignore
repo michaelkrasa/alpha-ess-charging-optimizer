@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 .venv/
+.venv-emhass/
 venv/
 ENV/
 env/
@@ -32,7 +33,7 @@ logs/
 data/
 
 # UV
-uv.lock
+# Commit uv.lock so local installs reproduce the validated dependency stack.
 
 # OS
 .DS_Store
@@ -41,3 +42,9 @@ uv.lock
 build/
 dist/
 *.spec
+
+# Private household evidence, deployment payloads and operational screenshots
+analysis/output/
+output/
+tmp/
+.venv*/

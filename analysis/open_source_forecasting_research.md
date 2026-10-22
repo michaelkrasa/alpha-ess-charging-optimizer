@@ -1,0 +1,45 @@
+# Open-source optimization and forecasting options
+
+Researched 2026-10-21 against project-owned documentation and source. This is a research recommendation, not a claim that any package has beaten this household's controller. No inverter commands or production changes were made during this research.
+
+## Recommendation
+
+Keep deterministic rolling optimization and the tested AlphaESS adapter as the execution boundary. Benchmark established forecasting methods and at least one established optimizer against the same household replay. A small household-specific forecasting model is a reasonable experiment; it should predict demand/PV and uncertainty, while explicit cost and hardware constraints determine commands. An LLM is unnecessary for the recurring numerical decision.
+
+Start with a causal intraday adjustment to the existing demand profile and a same-weekday baseline; then compare a small tree model. More accurate demand forecasts are useful only if they improve the downstream EUR outcome without excessive cycling or constraint violations. Do not replace the running controller merely because another project has more features.
+
+## Packages that already do this
+
+| Project | Verified capabilities | Fit for this household |
+| --- | --- | --- |
+| EMHASS | Residential linear-programming optimization of prices, PV, demand and storage; rolling `naive-mpc-optim` accepts current SOC and a configurable horizon. | Closest Python optimization/forecasting reference. Its generic power trajectory would need an adapter or added constraints for fixed-power AlphaESS charging, permission-only discharge and two windows per direction. That translation must be backtested rather than assumed equivalent. |
+| Predbat | Household battery planning with native cloud integrations, an optional own database and a web UI. Current upstream includes AlphaESS. | Serious alternative worth a read-only benchmark. Current AlphaESS support is explicitly experimental, so neither plug-and-play correctness nor better savings are established. |
+| OpenEMS | Java energy-management platform; its ToU controller uses production/demand forecasts, battery state and prices for rolling 24-hour schedules at 15-minute resolution. | Relevant architectural reference; moving this existing Python project to Java/device components would be substantial work. This research did not establish a matching AlphaESS Open API adapter. |
+
+EMHASS sources: [introduction](https://emhass.readthedocs.io/en/latest/intro.html), [rolling MPC guide](https://emhass.readthedocs.io/en/latest/study_cases/mpc.html). The guide explicitly calls for rerunning with latest measurements; cadence is configurable rather than inherently once daily. Its examples also show that terminal SOC must be chosen deliberately. [Runtime forecast inputs](https://emhass.readthedocs.io/en/latest/passing_data.html) accept PV/load watts and buy/sell EUR/kWh arrays. [Installation](https://emhass.readthedocs.io/en/latest/installation_methods.html) supports Docker and Python environments, as well as Home Assistant. The supplied deployment examples are HA-oriented; using the numerical engine with our own data and actuation is an integration task, not evidence that the full service runs unchanged without HA.
+
+Predbat's current [components documentation](https://github.com/springfall2008/batpred/blob/b743b5025cfbfaaccfb2b5c8f5ca52136f8f0ce2/docs/components.md) says its database can replace Home Assistant history and its interface can run against that database without HA. AlphaESS uses AppID/AppSecret, maps timed charge/discharge fields, detects periodic-API entitlement and falls back on `6017`. It cannot command battery export, and the docs advise `Control charge`. They label this integration experimental and require hardware verification. Optional LoadML uses a neural network and temperature/PV features; its existence does not prove that it forecasts this household better. The [standalone example](https://github.com/springfall2008/batpred/blob/b743b5025cfbfaaccfb2b5c8f5ca52136f8f0ce2/templates/ge_cloud_octopus_standalone.yaml) demonstrates the general database setup for another inverter, not a verified turnkey Czech AlphaESS installation.
+
+**Important Predbat source caveat:** its AlphaESS docs repeat a once-per-24-hour restriction, which our own commissioning disproved for this household. The [actual adapter](https://github.com/springfall2008/batpred/blob/b743b5025cfbfaaccfb2b5c8f5ca52136f8f0ce2/apps/predbat/alphaess.py) instead defaults `min_write_interval` to 300 seconds and makes it configurable. The source also distinguishes fixed legacy charge power and self-consumption-only discharge. We should review the exact revision and mapping before trusting its simulated actions; we must not reintroduce a 24-hour gate merely by adopting its documentation.
+
+OpenEMS sources: [ToU controller](https://openems.github.io/openems.io/openems/latest/edge/controller.d/io.openems.edge.controller.ess.timeofusetariff.html), [architecture](https://openems.github.io/openems.io/openems/latest/edge/architecture.html). It separates controllers, device communication and priorities, and requires a Java runtime. Its [spot-price components](https://openems.github.io/openems.io/openems/latest/edge/tariff.d/io.openems.edge.timeofusetariff.spottariff.html) include ENTSO-E and custom ancillary-cost schedules. These are relevant features, not a verified Czech supplier-billing integration.
+
+## Forecasting components worth reusing
+
+**EMHASS forecasting:** its [ML forecaster](https://github.com/davidusb-geek/emhass/blob/86563131c93d618417c731ca0b09581a533e27a0/docs/mlforecaster.md) wraps skforecast/scikit-learn, uses autoregressive lags plus calendar features, supports fit/predict/tune, and can add future weather covariates. Its [forecast module](https://emhass.readthedocs.io/en/latest/forecasts.html) also documents learned correction of PV forecasts from historical predicted versus actual generation. These are useful patterns; published examples from other households are not transferable savings estimates.
+
+**skforecast + LightGBM:** [skforecast](https://skforecast.org/) supplies recursive/direct forecasting with lagged, rolling, calendar and exogenous inputs. [Its LightGBM guide](https://skforecast.org/latest/user_guides/forecasting-xgboost-lightgbm) provides an established integration. [LightGBM](https://lightgbm.readthedocs.io/en/stable/Parameters.html) supports ordinary regression and quantile objectives. This combination is a practical small-model candidate, not an energy manager or inverter driver. Prediction intervals must be checked empirically: [skforecast's conformal documentation](https://skforecast.org/latest/user_guides/probabilistic-forecasting-conformal-prediction.html) warns that time-series dependence weakens nominal coverage guarantees.
+
+**pvlib:** [ModelChain](https://pvlib-python.readthedocs.io/en/stable/user_guide/modeling_topics/modelchain.html) converts weather/irradiance and configured PV-system characteristics into modeled DC/AC generation. It could improve the physical PV model when array/inverter details are available. It does not supply tomorrow's weather or optimize battery schedules by itself.
+
+## Proposed household experiment
+
+This sequence is our recommendation, inferred from the verified capabilities above:
+
+1. Freeze the present rolling policy and compare its cadence with a once-daily version using identical causal forecasts, battery physics, fees, reserve, wear and terminal energy valuation. Report cash cost separately from wear-adjusted cost and physical conversion losses.
+2. Score demand/PV errors by forecast lead time and season. Compare seven-day mean, same-weekday persistence, and a recent-load residual correction that decays with forecast lead time. All inputs must have existed at the decision timestamp.
+3. Train a modest tree model on lagged household demand, time/day/season, and archived forecast temperature. Keep PV as a separately calibrated weather-driven series; compare it with the existing irradiance scaling. Use chronological walk-forward validation, not a random split. One year of quarter-hour rows does not mean tens of thousands of independent days.
+4. Evaluate forecast variants through the same controller. Measure EUR saved, discharged energy/cycles, solar captured, import peaks and reserve compliance; a smaller average forecast error alone is insufficient.
+5. Run winning candidates in shadow mode and retain a simple baseline fallback. Prefer small, regularly retrained models over a large bespoke neural model until household holdouts show a financial benefit.
+
+Battery conversion efficiency and financial optimization are different: frequent replanning changes when energy moves, not the battery's intrinsic round-trip efficiency. It creates opportunities to correct forecast errors, but a poor terminal value, incomplete future prices, inaccurate forecasts or actuator mismatch can still make a more frequently revised plan worse.

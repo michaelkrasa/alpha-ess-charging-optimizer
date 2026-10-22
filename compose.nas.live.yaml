@@ -1,0 +1,4 @@
+# Use only after stopping the Mac controller and completing the NAS handover.
+services:
+  household-manager:
+    command: ["python", "main.py", "serve", "--host", "0.0.0.0", "--port", "8765", "--live"]

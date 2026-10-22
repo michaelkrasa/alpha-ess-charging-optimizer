@@ -1,177 +1,155 @@
-# AlphaESS Charging Optimizer
+# AlphaESS household battery manager
 
-Optimize AlphaESS battery charging and discharge schedules against Czech OTE day-ahead prices.
+A local energy manager for an AlphaESS residential battery, with an EMHASS rolling optimizer and a tablet-friendly dashboard. It replans every 15 minutes using the measured battery state, published electricity prices, expected household demand and weather-based solar forecasts.
 
-It reads the next day's 15-minute electricity prices, checks the current battery state, finds cheap charge windows and expensive discharge windows, and programs the resulting schedule into AlphaESS.
+The household installation runs in Docker on a Synology NAS. It uses the AlphaESS **cloud API** to read telemetry and update inverter settings; Home Assistant is not required.
 
-## At A Glance
+## Open the dashboard
 
-```mermaid
-flowchart LR
-    A[OTE prices 96 slots / day] --> B[Detect cheap valleys and expensive peaks]
-    C[AlphaESS API SOC + capacity] --> D[Battery-aware sizing]
-    B --> E[Build up to 2 charge/discharge cycles]
-    D --> E
-    F[Optional solar forecast] --> E
-    E --> G[Dry run: print plan]
-    E --> H[Live run: write schedule to AlphaESS]
-```
+**Household address:** [http://nasnas.local:8765](http://nasnas.local:8765)
+**IP fallback:** [http://10.0.0.11:8765](http://10.0.0.11:8765)
+**Port:** `8765/TCP`
 
-- It is dynamic, not fixed-time: it reacts to the actual shape of each day's prices.
-- It is battery-aware: it sizes windows using current SOC and usable capacity.
-- It works within AlphaESS limits: up to 2 charge windows and 2 discharge windows per day.
-- It can optionally account for solar forecast so the system avoids unnecessary grid charging.
+Open it from a phone, computer or tablet on the home network. The local dashboard intentionally has no username or password. Keep this port private; use a trusted VPN for remote access rather than forwarding it to the internet.
 
-## Quick Start
+The dashboard shows:
 
-### 1. Install dependencies
+- Automatic control ON/OFF, controller health and latest successful AlphaESS contact.
+- Measured battery SOC and power, with the inverter's measurement timestamp.
+- Proposed actions alongside charge and household-supply windows read back from the inverter.
+- Today/tomorrow price charts with a linear scale, midnight boundaries and daily minimum, maximum and mean prices.
+- Today's measured site demand and solar generation, filling from midnight as readings arrive.
 
-```bash
-git clone https://github.com/michaelkrasa/AlphaESS-charging-optimizer.git
-cd AlphaESS-charging-optimizer
-uv sync
-```
+**ON** lets the manager update schedules after its readiness checks pass. **OFF** requests restoration of native solar charging and household self-consumption; the dashboard shows restoration as pending until confirmed. Monitoring continues while control is off. A green HTTP heartbeat means the web server responds; cloud contact and inverter measurement freshness are separate indicators.
 
-### 2. Configure credentials
+## How decisions work
+
+1. Read current SOC, timestamped power measurements and installed inverter schedules.
+2. Build 15-minute demand and solar forecasts aligned to the market-price intervals.
+3. Run EMHASS model predictive control over the available published-price horizon, up to 24 hours.
+4. Translate the next action into the inverter's available charge and household-discharge windows.
+5. Send changed settings, then read both configurations back. Replan at the next quarter hour.
+
+Full-night charging is allowed when expected savings justify conversion losses, assumed battery wear and any displaced solar capture. Unknown tomorrow prices are never invented; the horizon extends once day-ahead prices are available, normally around 15:00 Europe/Prague.
+
+This household uses `legacy_daily`: the **standard time-of-day API format**, not a once-per-day update limit. It stores two charge and two household-discharge windows at a time. Repeated rewrites allow the manager to change them throughout the day. The weekly scheduling API returns `6017` on this system and is not required.
+
+The active planner is `standard_planner: emhass`. With `emhass_shadow: true`, the previous search runs as a read-only comparison using the same initial SOC, prices and forecasts. It cannot write a second schedule.
+
+### Physical and financial assumptions
+
+- Battery reserve: **10%**. Maximum charging target: **100%**.
+- Battery export is disabled; discharge means supplying the house. Only surplus PV is sold.
+- The EV is grid-only and blocks battery discharge during charging. Likely EV sessions are excluded from battery-demand training; their measured consumption remains in site billing. This inference is uncertain because there is no connected EV meter channel.
+- Grid charging is modeled at 8.6 kW. Effective SOC-to-energy capacity is 14.2 kWh; API nominal battery capacity is 17.2 kWh.
+- Charge/discharge efficiencies are 95% each way. Battery wear is an explicit assumption of EUR 0.045 per discharged kWh.
+- There is **no default grid-import power cap**. An optional explicit cap can be configured for other installations.
+- All optimizer, dashboard and accounting amounts use **EUR**. Fixed standing charges are excluded from marginal charging decisions.
+
+The tariff adapter includes supplier commodity/service charges, VT/NT distribution, system services, electricity tax and VAT. Non-EUR contract fee inputs are converted at ingestion using the CNB EUR rate. There is no extra flat EUR 115/MWh transmission adder.
+
+OTE is the default market-price source. ENTSO-E is supported with `price_source: entsoe` and an `ENTSOE_TOKEN`. The checked 21 October 2026 OTE and ENTSO-E series matched for all 96 quarter hours.
+
+Demand uses a seven-day measured profile. Solar uses location/orientation, Open-Meteo tilted irradiance and calibration against recent measured PV. Actual EMHASS learned load and solar forecasting tools were evaluated, but did not consistently improve both tested seasons; they are not enabled just because they are available.
+
+## Run on a computer
+
+Requires Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
+# Fill APP_ID, APP_SECRET and SERIAL_NUMBER in .env.
+chmod 600 .env
+uv sync --extra emhass --extra dev
+uv run --extra emhass python main.py serve --host 127.0.0.1 --port 8765
 ```
 
-Fill in your AlphaESS Open API credentials in `.env`:
+This starts monitoring/planning without inverter writes. Open [http://127.0.0.1:8765](http://127.0.0.1:8765). Configure `manager.yaml` and `solar_config.yaml` for the installation before enabling live operation.
 
-```dotenv
-APP_ID=your_alphaess_app_id
-APP_SECRET=your_alphaess_app_secret
-SERIAL_NUMBER=your_ess_serial_number
-```
-
-Optional deployment settings for Lambda are also documented in `.env.example`.
-
-### 3. Run it
-
-The simplest way to run it is:
+For a commissioned installation:
 
 ```bash
-uv run python main.py --help
+uv run --extra emhass python main.py serve --live
 ```
 
-Common examples:
+`--live` allows device writes; persisted dashboard control must also be ON. A fresh database starts OFF. The default server bind is `0.0.0.0`, allowing LAN access. **Run only one live manager against an inverter.** The household Mac instance was stopped during the NAS handover; do not start a second live instance there.
+
+Other commands:
 
 ```bash
-# Live run for today in the configured timezone
-uv run python main.py
-
-# Dry run for today
-uv run python main.py --dry-run
-
-# Dry run for a specific calendar date
-uv run python main.py --dry-run --date 2026-04-08
-
-# Dry run for a day in the current month
-uv run python main.py --dry-run --date 15
+uv run --extra emhass python main.py once
+uv run --extra emhass python main.py mode on --live
+uv run --extra emhass python main.py mode off --live
+uv run --extra emhass python main.py replay --date 2025-12-10 --power-file /path/to/private/power.csv
 ```
 
-The module entry point still works too:
+`once` without `--live` never changes the inverter. `main.py` is the application entry point. `src.optimizer` is the historical standalone optimizer, retained for comparison.
+
+## Run with Docker / Synology
+
+Use **`Dockerfile.nas`**, not the Lambda Dockerfile. The container includes EMHASS and runs as UID/GID `10001`, with a read-only root filesystem, writable `/tmp`, bounded logs and persistent SQLite state.
 
 ```bash
-uv run python -m src.optimizer --dry-run
+# In a dedicated directory containing the project files:
+mkdir -p data
+sudo chown 10001:10001 data
+chmod 600 .env
+# Set NAS_BIND_IP to the NAS LAN IP in .env.
+docker compose --env-file .env -f compose.nas.yaml up -d --build
 ```
 
-## Example Output
-
-In a dry run, you should expect logs along these lines:
-
-```text
-Battery SOC: 42.0%
-Dynamic optimization for 2026-04-08 [DRY RUN]
-Daily stats: mean=104, min=51, max=188
-Cycle: Charge 02:00-04:30 -> Discharge 17:00-20:00
-[DRY RUN] Would set charging schedule: ...
-[DRY RUN] Would set discharge schedule: ...
-```
-
-The exact windows depend on that day’s prices, current battery SOC, and optional solar forecast input.
-
-## CLI Reference
+The base Compose file starts without live writes. After commissioning and stopping any previous controller:
 
 ```bash
-uv run python main.py [--dry-run] [--date DAY|YYYY-MM-DD] [--config PATH]
+docker compose --env-file .env -f compose.nas.yaml -f compose.nas.live.yaml up -d
 ```
 
-- `--dry-run`: analyze and print schedules without changing anything in AlphaESS
-- `--date`: accepts either a day of month like `15` or a full ISO date like `2026-04-08`
-- `--config`: override the default config file path (`config.yaml`)
+Enable automatic control in the dashboard after checking cloud contact and readiness. `restart: unless-stopped` handles ordinary process restarts and NAS boots. The healthcheck tests HTTP availability; inspect dashboard health for actual controller/cloud status.
 
-## Configuration
+See [NAS.md](NAS.md) for the household deployment, unsupported RS819 installation, recovery, updates, backups and maintenance. The one-time `ops/nas/deploy.py` script is specifically pinned to this household's reviewed hardware/DSM/package and private deployment payload; it is not a general Synology installer.
 
-Main runtime settings live in `config.yaml`.
+### Persistence and backups
 
-Important keys:
+Runtime state is in `data/manager.sqlite3`: ON/OFF intent, write spacing, measurements, forecasts, prices and history. Keep it on the NAS filesystem, not an SMB-mounted database. Back up through SQLite's backup operation or stop the container first; copying only a live database file can miss WAL contents.
 
-- `timezone`: determines what "today" means for optimization
-- `charge_rate_kw`: battery charge rate
-- `price_multiplier`: valley/peak sensitivity
-- `min_soc` and `max_soc`: discharge floor and charge target
-- `solar_forecast_enabled`: enables the Open-Meteo based solar forecast path
+Credentials stay in `.env` and are passed at runtime. They are not baked into the image. Raw household datasets, deployment bundles, operational snapshots and local screenshots are excluded from Git.
 
-The included default config enables solar forecast support and reads the extra settings from `solar_config.yaml`.
+## Readiness and limitations
 
-## AlphaESS API Notes
+New writes require fresh measurements, complete priced/forecast intervals, verified tariff switching times and explicit commissioning. A schedule readback confirms the inverter stored the settings; measured power shows what the battery was actually doing at its timestamp. Neither proves future execution or realized savings.
 
-This project uses the AlphaESS Open API through the `alphaessopenapi` package.
+The current household HDO schedule is verified only for **20–26 October 2026**: VT 09:00–13:00, NT otherwise. **Recheck and update `tariff_valid_from` / `tariff_valid_until` before 27 October.** The controller blocks new schedules when that verification expires.
 
-- API credentials are read from `.env`
-- Live runs update the device charging and discharge schedules
-- Dry runs do not send schedule changes
-- The integration code is in `src/ess_client.py`
-- The optimizer reads current SOC and usable battery capacity before building a plan
+Standard schedules repeat daily. A cloud outage or expired forecast does not automatically cancel an already-installed schedule. Charge and discharge updates are separate, non-atomic calls; partial changes remain unconfirmed and safe staging/readback is used. Device writes are serialized with at least ten seconds between requests. Read-only cloud monitoring runs about once a minute; the dashboard heartbeat runs every five seconds.
 
-If you need to understand or change the AlphaESS integration, start in `src/ess_client.py`.
+The standard API's maximum endpoint is 23:45, so it cannot represent the final quarter as an ordinary same-day window. Horizons crossing a daylight-saving clock change are rejected rather than mapped ambiguously. Direct LAN/Modbus inverter control has not been configured.
 
-## Project Structure
+## Validation
 
-The most important files are:
-
-- `main.py`: simplest local entry point
-- `src/optimizer.py`: main orchestration and CLI argument handling
-- `src/price_analyzer.py`: valley and peak detection
-- `src/battery_manager.py`: SOC and battery sizing logic
-- `src/ess_client.py`: AlphaESS API reads and schedule writes
-- `src/price_cache.py`: cache for fetched price data
-- `config.yaml`: runtime tuning
-- `solar_config.yaml`: solar forecast settings
-- `lambda_handler.py`: AWS Lambda entry point
-- `tests/`: regression and scenario coverage
-
-If you are new to the repo, `main.py` -> `src/optimizer.py` -> `src/ess_client.py` is the shortest useful path through the code.
-
-## Testing
+The current suite has **580 passing tests and 131 skips**. It covers actual EMHASS solves, executable schedules, energy accounting, EV separation, forecast causality, price/time alignment, reserve constraints, stale data, control leases, partial writes, dashboard feedback and bounded NAS recovery. Skips belong to existing historical price-window cases; they are not successful checks.
 
 ```bash
-uv run pytest tests/ -v
-uv run pytest tests/test_ess.py -v
-uv run pytest tests/test_december_2025.py -v
-uv run pytest tests/test_january_2026.py -v
+uv run --extra emhass --extra dev pytest tests/ -q
 ```
 
-## AWS Lambda
+[EMHASS validation](analysis/emhass_validation.md) records comparable walk-forward replays. Over 42 recent days and 90 autumn days, EMHASS had lower modeled cash/economic costs than the previous live search and original once-daily policy. These are inspected historical scenarios, **not guaranteed annual savings or measured invoice reconciliation**. Assumed battery physics, inferred EV sessions, archived weather and historical tariff scenarios limit the conclusions.
 
-Deploy with:
+[Analysis guide](analysis/README.md) explains the reports and private reproduction inputs. Earlier daily-only figures are retained as historical diagnostics and do not validate the rolling policy.
 
-```bash
-./deploy-lambda.sh
-```
+## Project layout
 
-This uses:
+| Path | Purpose |
+| --- | --- |
+| `main.py`, `src/manager/cli.py` | CLI and server entry point |
+| `src/manager/controller.py` | Single-writer control, readiness and schedule confirmation |
+| `src/manager/emhass_mpc.py` | EMHASS rolling planner and appliance constraints |
+| `src/manager/providers.py` | Telemetry, prices and forecast inputs |
+| `src/manager/web.py`, `dashboard.html` | API and local dashboard |
+| `manager.yaml`, `solar_config.yaml` | Installation settings and solar geometry |
+| `compose.nas*.yaml`, `Dockerfile.nas` | Persistent local/container deployment |
+| `ops/nas/` | Pinned commissioning and bounded boot recovery |
+| `analysis/`, `tests/` | Evaluation tools, reports and automated checks |
 
-- `lambda_handler.py` as the entry point
-- `Dockerfile` for the Lambda container image
-- AWS settings from `.env`
+## AWS status
 
-## Notes
-
-- Target market: Czech OTE day-ahead prices with 15-minute slots
-- AlphaESS API limitation: at most 2 charge windows and 2 discharge windows per day
-- For scheduled automation, run shortly after the next-day prices are available
-- Default timezone handling comes from `config.yaml`, not from your shell timezone
+Lambda packaging and SAM infrastructure are retained, but **this EMHASS household configuration is deployed to the NAS, not AWS**. The small Lambda ZIP excludes EMHASS and cannot run this configuration unchanged. Do not treat the scaffold as a validated alternative deployment. Cloud dashboard authentication remains required; local passwordless behavior must not be copied to a public Function URL.

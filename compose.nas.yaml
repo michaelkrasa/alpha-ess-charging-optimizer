@@ -1,0 +1,42 @@
+services:
+  household-manager:
+    container_name: alphaess-household
+    image: alphaess-household:local
+    build:
+      context: .
+      dockerfile: Dockerfile.nas
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    ports:
+      # Bind to the NAS LAN address to allow access from the household tablet.
+      # Defaults to loopback until a LAN address is explicitly supplied.
+      - "${NAS_BIND_IP:-127.0.0.1}:8765:8765"
+    environment:
+      TZ: Europe/Prague
+      APP_ID: "${APP_ID:?Supply APP_ID in the deployment env file}"
+      APP_SECRET: "${APP_SECRET:?Supply APP_SECRET in the deployment env file}"
+      SERIAL_NUMBER: "${SERIAL_NUMBER:?Supply SERIAL_NUMBER in the deployment env file}"
+    volumes:
+      - ./data:/app/data
+      - ./manager.yaml:/app/manager.yaml:ro
+      - ./solar_config.yaml:/app/solar_config.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Initial ceiling for the scientific Python stack; measure on the actual NAS.
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      # Checks the HTTP process, not freshness of inverter data.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/', timeout=5).close()"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

@@ -1,117 +1,31 @@
-"""
-AWS Lambda handler for AlphaESS Charging Optimizer
-
-Triggered by EventBridge schedule at 00:00 daily to optimize battery charging/discharging for that day.
-Runs once and exits.
-"""
+"""Scheduled quarter-hour controller and authenticated dashboard Function URL."""
 
 import asyncio
-import json
-import logging
 import os
-from datetime import datetime
+import logging
 
-# Configure logging for CloudWatch - let CloudWatch handle timestamps
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+from mangum import Mangum
 
-# Remove default handlers
-for handler in logger.handlers:
-    logger.removeHandler(handler)
-
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(levelname)s %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-
-# Suppress noisy loggers
-logging.getLogger('aiohttp').setLevel(logging.WARNING)
-logging.getLogger('asyncio').setLevel(logging.WARNING)
-
-
-async def run_optimization(config_path: str) -> dict:
-    """
-    Async optimization runner - must be called within event loop
-    so aiohttp can create its session properly.
-    
-    Runs once for today and exits (Lambda execution model).
-    """
-    from src.optimizer import ESSOptimizer
-
-    optimizer = ESSOptimizer(config_path)
-
-    try:
-        # Use configured timezone for consistency
-        target_date = datetime.now(optimizer.timezone)
-        logger.info(f"Optimizing for today: {target_date.date()}")
-        success = await optimizer.optimize_for_day(target_date, dry_run=False)
-
-        return {
-            'success': success,
-            'timestamp': datetime.now().isoformat(),
-            'message': 'Optimization completed' if success else 'Optimization failed'
-        }
-    finally:
-        await optimizer.client.close()
+from src.manager.controller import Controller
+from src.manager.settings import load_settings
+from src.manager.store import BusyError, make_store
 
 
 def lambda_handler(event, context):
-    """
-    AWS Lambda entry point for ESS optimization.
-    
-    Designed to run once at 00:00 daily via EventBridge schedule.
-    Optimizes for the current day (today).
-    
-    Event parameters (all optional):
-    - config_path: Override config file path (default: 'config.yaml')
-    
-    Environment variables (required):
-    - APP_ID: AlphaESS API app ID
-    - APP_SECRET: AlphaESS API app secret  
-    - SERIAL_NUMBER: ESS serial number
-    """
-    logger.info(f"Lambda invoked with event: {json.dumps(event)}")
+    logging.getLogger("alphaess").setLevel(logging.CRITICAL)
+    settings = load_settings()
+    store = make_store(settings)
+    live = os.environ.get("MANAGER_LIVE", "false").lower() == "true"
+    if event.get("requestContext", {}).get("http"):
+        from src.manager.web import create_app
 
-    # Parse event parameters
-    config_path = event.get('config_path', 'config.yaml')
-
-    # Validate required environment variables
-    required_env = ['APP_ID', 'APP_SECRET', 'SERIAL_NUMBER']
-    missing = [var for var in required_env if not os.environ.get(var)]
-    if missing:
-        error_msg = f"Missing required environment variables: {missing}"
-        logger.error(error_msg)
-        return {
-            'statusCode': 400,
-            'body': json.dumps({'success': False, 'error': error_msg})
-        }
-
+        return Mangum(create_app(settings, store, live=live), lifespan="off")(
+            event, context
+        )
     try:
-        # Run the async optimization within asyncio.run()
-        # This ensures the event loop is running before ESSOptimizer is created
-        result = asyncio.run(run_optimization(config_path))
-
-        response = {
-            'statusCode': 200 if result['success'] else 500,
-            'body': json.dumps(result)
-        }
-        logger.info(f"Lambda completed: {response}")
-        return response
-
-    except Exception as e:
-        logger.exception(f"Lambda execution failed: {e}")
+        return asyncio.run(Controller(settings, store, live=live).run_once())
+    except BusyError:
         return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'success': False,
-                'error': str(e),
-                'error_type': type(e).__name__
-            })
+            "status": "busy",
+            "message": "Another controller operation owns the lease",
         }
-
-
-# For local testing
-if __name__ == "__main__":
-    test_event = {}
-    result = lambda_handler(test_event, None)
-    print(json.dumps(result, indent=2))

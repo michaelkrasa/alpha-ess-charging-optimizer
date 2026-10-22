@@ -3,7 +3,9 @@ lib/
 __pycache__/
 *.pyc
 .venv/
+.venv*/
 venv/
+tests/
 
 # Build artifacts
 build/
@@ -30,6 +32,11 @@ pytest.ini
 
 # Local config (use env vars in Lambda)
 .env
+.env.*
+data/
+analysis/
+output/
+tmp/
 
 # Lock files (dependencies installed from pyproject.toml)
 uv.lock
