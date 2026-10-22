@@ -20,7 +20,7 @@ class DummyForecaster:
 
 
 @pytest.mark.asyncio
-async def test_hourly_forecast_expands_to_quarters():
+async def test_hourly_forecast_expands_to_quarters(tmp_path, monkeypatch):
     """Hourly PV points should be expanded into 4x 15-min slots."""
     tz = ZoneInfo("Europe/Prague")
     points = [
@@ -28,7 +28,14 @@ async def test_hourly_forecast_expands_to_quarters():
         AlphaESSSolarPoint(timestamp=datetime(2026, 2, 26, 11, 0, tzinfo=tz), pv_power_kw=4.0, raw={}),
     ]
 
-    optimizer = ESSOptimizer()
+    # Keep this forecast test independent of a developer's private .env.
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "app_id: test-id\napp_secret: test-secret\nserial_number: test-serial\n"
+        "price_multiplier: 1.2\ncharge_rate_kw: 5\ntimezone: Europe/Prague\n"
+    )
+    optimizer = ESSOptimizer(str(config))
     optimizer.solar_config = SolarConfig(
         latitude=49.0,
         longitude=14.0,
