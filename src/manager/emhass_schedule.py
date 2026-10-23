@@ -23,6 +23,14 @@ def schedule_from_decisions(
         # accidentally change today's in-progress quarter with the same clock.
         if t.astimezone(PRAGUE).date() != command_day:
             break
+        # A future partial action needs a fresh preceding-cycle commitment.
+        # Do not install it as an unbounded/full-quarter charge on an outage.
+        if (
+            d.action == "charge"
+            and d.charge_minutes in (5, 10)
+            and d is not decisions[0]
+        ):
+            continue
         end = (t + timedelta(minutes=15)).astimezone(PRAGUE)
         start = t.astimezone(PRAGUE)
         # Device accepts no end later than23:45. Boundary projection is
@@ -100,6 +108,7 @@ def schedule_from_decisions(
             # outside it cannot change the committed charge action.
             d = None
     charge, discharge = payloads(c, d, settings)
+    from .partial_charge import stop_intents
     from .legacy_device import LegacyDevice
 
     LegacyDevice.validate_settings(charge, "charge")
@@ -111,9 +120,15 @@ def schedule_from_decisions(
     first_action = (
         "charge" if first_charge else "self_consume" if first_supply else "hold"
     )
-    raw = score_candidates(slots, telemetry, settings, [((), None), (c, d)])
+    # The legacy scorer models whole windows only. Partial plans already carry
+    # independently replayed EMHASS decisions; do not calculate an invalid score.
+    benefit = None
+    if settings.charge_step_minutes == 15:
+        raw = score_candidates(slots, telemetry, settings, [((), None), (c, d)])
+        benefit = float(raw[0] - raw[1])
     projected = first_action != decisions[0].action
     return {
+        "early_stops": stop_intents(decisions[:1]) if first_action == "charge" else [],
         "charge": charge,
         "discharge": discharge,
         "version": 3,
@@ -123,7 +138,7 @@ def schedule_from_decisions(
         "lookahead_until": (
             datetime.fromisoformat(slots[-1].timestamp) + timedelta(minutes=15)
         ).isoformat(),
-        "forecast_benefit_eur": float(raw[0] - raw[1]),
+        "forecast_benefit_eur": benefit,
         "forecast_improvement_vs_legacy_eur": None,
         "candidate_count": None,
         "selected": {"charge": c, "discharge": d},

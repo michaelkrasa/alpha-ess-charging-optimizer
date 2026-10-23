@@ -16,6 +16,20 @@ from .daily import plan_daily
 from .legacy_device import LegacyDevice
 from .energy_day import cache_daily_totals, cache_power_history, record_measurement
 from .soc_tracking import capture_forecast
+from .charge_policy import (
+    archive_forecasts,
+    record_errors,
+    observe_full_charge,
+    planner_options,
+    reserve_premium,
+)
+from .partial_charge import (
+    TERMINAL_STOPS,
+    active_stops,
+    mask_stopped_charge,
+    prepare_stops,
+    stop_due,
+)
 
 
 class Controller:
@@ -32,6 +46,7 @@ class Controller:
         )
         self.providers = Providers(settings, store)
         self._emhass = None
+        self.deadline_executor_active = False
 
     async def standard_plan(self, slots, telemetry, current_schedule):
         """One writer; optional independent EMHASS proposal uses identical inputs."""
@@ -61,10 +76,16 @@ class Controller:
 
                 if self._emhass is None:
                     self._emhass = EmhassPlanner(self.settings)
-                decisions = await asyncio.to_thread(self._emhass.plan, slots, telemetry)
+                policy_args = planner_options(
+                    self.settings, self.store, slots, utc_now()
+                )
+                decisions = await asyncio.to_thread(
+                    self._emhass.plan, slots, telemetry, **policy_args
+                )
                 emhass_plan = schedule_from_decisions(
                     decisions, slots, telemetry, self.settings, current_schedule
                 )
+                emhass_plan["charge_policy"] = getattr(self._emhass, "last_policy", {})
                 comparison = {
                     "status": "partial"
                     if candidate_error
@@ -129,6 +150,17 @@ class Controller:
                 "Controlled schedule writes, 10% reserve enforcement and appliance import protection are not yet commissioned on this inverter."
                 if self.settings.control_mode == "legacy_daily"
                 else "Native self-consumption and reserve controls are not verified on this inverter."
+            )
+        if (
+            self.settings.charge_step_minutes < 15
+            and not self.settings.early_stop_verified
+        ):
+            gaps.append(
+                "Partial-window stop/readback/power behavior is not yet commissioned."
+            )
+        if self.settings.charge_step_minutes < 15 and not self.deadline_executor_active:
+            gaps.append(
+                "Partial charging requires the continuous server deadline executor; one-shot/Lambda control cannot stop it on time."
             )
         if self.settings.control_mode == "periodic" and not self.settings.hold_verified:
             gaps.append("Battery hold behavior is not verified on this inverter.")
@@ -221,9 +253,11 @@ class Controller:
                     )
             return control
         finally:
-            if device:
-                await device.close()
-            self.store.release(owner)
+            try:
+                if device:
+                    await device.close()
+            finally:
+                self.store.release(owner)
 
     async def observe(self, owner, device):
         """Read-only contact, keeping API reachability separate from sample age."""
@@ -233,6 +267,7 @@ class Controller:
                 raise BusyError("Controller lease expired while fetching telemetry")
             telemetry.validate(utc_now(), self.settings.telemetry_max_age_minutes)
             self.store.put("telemetry", asdict(telemetry))
+            observe_full_charge(self.store, telemetry, utc_now())
             record_measurement(self.store, asdict(telemetry), utc_now())
             self.store.put(
                 "device_connection",
@@ -265,6 +300,12 @@ class Controller:
         if not self.live:
             return
         now = utc_now()
+        if any(
+            x.get("status") not in TERMINAL_STOPS
+            and 0 <= (datetime.fromisoformat(x["stop_at"]) - now).total_seconds() <= 120
+            for x in self.store.get("early_stops", [])
+        ):
+            return
         # Leave a clear runway for the next scheduled control cycle.
         if (next_boundary(now) - now).total_seconds() <= 120:
             return
@@ -294,13 +335,20 @@ class Controller:
                     )
                     if self.store.is_owner(owner):
                         cache_power_history(self.store, samples, utc_now())
+                        record_errors(
+                            self.store,
+                            samples,
+                            utc_now(),
+                            self.settings.exclude_inferred_grid_only_ev,
+                        )
                 except DeviceUnavailable:
                     pass  # Keep available measurements if day-history retrieval fails.
-            totals = self.store.get('daily_energy') or {}
-            checked = totals.get('checked_at')
-            if hasattr(device, 'daily_energy') and (
-                totals.get('day') != str(utc_now().astimezone(PRAGUE).date())
-                or not checked or (utc_now() - datetime.fromisoformat(checked)).total_seconds() >= 900
+            totals = self.store.get("daily_energy") or {}
+            checked = totals.get("checked_at")
+            if hasattr(device, "daily_energy") and (
+                totals.get("day") != str(utc_now().astimezone(PRAGUE).date())
+                or not checked
+                or (utc_now() - datetime.fromisoformat(checked)).total_seconds() >= 900
             ):
                 try:
                     raw = await device.daily_energy(utc_now().astimezone(PRAGUE).date())
@@ -315,7 +363,154 @@ class Controller:
             finally:
                 self.store.release(owner)
 
+    async def stop_charge_once(self, *, lease_owner=None):
+        """Deadline executor: no optimizer, same durable lease as every writer."""
+        if not self.live or self.settings.charge_step_minutes == 15:
+            return
+
+        def due(intent):
+            return stop_due(intent, self.store.get("telemetry") or {}, utc_now())
+
+        pending = [
+            x
+            for x in self.store.get("early_stops", [])
+            if x.get("status") not in TERMINAL_STOPS and due(x)
+        ]
+        if not pending:
+            return
+        owner = lease_owner or uuid4().hex
+        if lease_owner is None:
+            self.store.acquire(owner)
+        elif not self.store.is_owner(owner, min_remaining=90):
+            raise BusyError(
+                "Commissioning does not own a sufficiently fresh writer lease"
+            )
+        device = None
+        try:
+            # Re-read after acquiring, including user OFF intent.
+            control = self.control()
+            # Ceasing an existing charge remains allowed if tariff coverage or
+            # telemetry expires. Those checks still gate every new energizing write.
+            if (
+                not control["enabled"]
+                or not self.settings.device_control_verified
+                or not self.settings.early_stop_verified
+            ):
+                return
+            device = self.device_factory()
+            charge, discharge = await device.read_config()
+
+            def guard():
+                return (
+                    self.store.is_owner(owner, min_remaining=30)
+                    and self.control()["enabled"]
+                    and self.control()["revision"] == control["revision"]
+                )
+
+            intents = self.store.get("early_stops", [])
+            for intent in intents:
+                if intent.get("status") in TERMINAL_STOPS or not due(intent):
+                    continue
+                if (
+                    intent.get("revision") != control["revision"]
+                    or datetime.fromisoformat(intent["end"]) <= utc_now()
+                ):
+                    intent["status"] = (
+                        "cancelled"
+                        if intent.get("revision") != control["revision"]
+                        else "expired"
+                    )
+                    continue
+                # Persist the mask before transmission, including ambiguous failures.
+                intent["status"] = "stopping"
+                self.store.put("early_stops", intents)
+                stopped = mask_stopped_charge(charge, intent)
+                self.store.put(
+                    "device_schedule",
+                    {
+                        "charge": charge,
+                        "discharge": discharge,
+                        "checked_at": utc_now().isoformat(),
+                        "readback_pending": True,
+                        "source": "early_stop_pending",
+                    },
+                )
+                await device.write_charge(stopped, charge, guard)
+                if not guard():
+                    return
+                charge = stopped
+                intent["status"] = "completed"
+                intent["confirmed_at"] = utc_now().isoformat()
+                self.store.put("early_stops", intents)
+                self.store.put(
+                    "device_schedule",
+                    {
+                        "charge": charge,
+                        "discharge": discharge,
+                        "checked_at": utc_now().isoformat(),
+                        "readback_pending": False,
+                        "source": "early_stop_readback",
+                    },
+                )
+                self.store.put(
+                    "applied_schedule",
+                    {
+                        "charge": charge,
+                        "discharge": discharge,
+                        "confirmed_at": utc_now().isoformat(),
+                    },
+                )
+                self.store.put(
+                    "early_stop_health",
+                    {
+                        "status": "confirmed",
+                        "timestamp": utc_now().isoformat(),
+                        "physical_execution_verified": False,
+                    },
+                )
+                self.store.append(
+                    {
+                        "type": "early_stop",
+                        "timestamp": utc_now().isoformat(),
+                        "start": intent["start"],
+                        "schedule_verified": True,
+                        "physical_execution_verified": False,
+                    }
+                )
+            self.store.put("early_stops", intents)
+        finally:
+            try:
+                if device:
+                    await device.close()
+            finally:
+                if lease_owner is None:
+                    self.store.release(owner)
+
     async def run_once(self):
+        # Do not let a full-horizon solve hold the writer lease across an active
+        # short charge's deadline. The independent deadline loop handles its stop.
+        now = utc_now()
+        pending_stops = active_stops(self.store.get("early_stops", []), now)
+        if self.live and self.control()["enabled"] and pending_stops:
+            await self.stop_charge_once()
+            deadline = max(
+                now + timedelta(seconds=5),
+                min(datetime.fromisoformat(x["stop_at"]) for x in pending_stops),
+            )
+            self.store.put(
+                "actuation",
+                {
+                    "status": "waiting",
+                    "next_write_at": deadline.isoformat(),
+                    "message": "Short-charge deadline takes priority over replanning.",
+                },
+            )
+            return {
+                "type": "cycle",
+                "timestamp": now.isoformat(),
+                "status": "waiting",
+                "message": "Short-charge deadline takes priority over replanning.",
+            }
         owner = uuid4().hex
         self.store.acquire(owner)
         now = utc_now()
@@ -425,6 +620,7 @@ class Controller:
             slots, notes = await self.providers.slots(now, device, telemetry)
             if not self.store.is_owner(owner):
                 raise BusyError("Controller lease expired while fetching forecasts")
+            archive_forecasts(self.store, slots, now)
             planning_telemetry = replace(
                 telemetry,
                 capacity_kwh=self.settings.effective_capacity_kwh
@@ -471,6 +667,8 @@ class Controller:
                 },
             }
             if daily is not None:
+                payload["early_stops"] = daily.get("early_stops", [])
+                payload["charge_policy"] = daily.get("charge_policy", {})
                 payload["outlook_decisions"] = daily.get(
                     "outlook_decisions", payload["decisions"]
                 )
@@ -524,6 +722,17 @@ class Controller:
                     telemetry.validate(
                         utc_now(), self.settings.telemetry_max_age_minutes
                     )
+                    if self.settings.charge_step_minutes < 15:
+                        # Save intent before the first possible API write. Existing
+                        # deadlines for a quarter never move later during replanning.
+                        intents, payload["charge"] = prepare_stops(
+                            self.store.get("early_stops", []),
+                            payload.get("early_stops", []),
+                            payload["charge"],
+                            control["revision"],
+                            utc_now(),
+                        )
+                        self.store.put("early_stops", intents)
                     method = (
                         device.apply_daily
                         if self.settings.control_mode == "legacy_daily"
@@ -557,6 +766,16 @@ class Controller:
                             + ".",
                         }
                     else:
+                        if not (daily and daily.get("first_action_projection")):
+                            reserve_premium(
+                                self.store,
+                                payload.get("charge_policy", {}).get("buffer") or {},
+                                payload["decisions"][0]["timestamp"],
+                                datetime.fromisoformat(
+                                    payload["decisions"][0]["timestamp"]
+                                ),
+                                self.settings.hedge_premium_eur,
+                            )
                         result = await method(
                             payload
                             if self.settings.control_mode == "legacy_daily"
@@ -599,7 +818,9 @@ class Controller:
                     )
             if not self.store.is_owner(owner):
                 return lost_lease()
-            if status == "active" and not (daily and daily.get("first_action_projection")):
+            if status == "active" and not (
+                daily and daily.get("first_action_projection")
+            ):
                 capture_forecast(self.store, payload, utc_now())
             self.store.put("last_success", now.isoformat())
             record = {
@@ -677,14 +898,18 @@ class Controller:
             self.store.append(record)
             return record
         finally:
-            if device:
-                await device.close()
-            self.store.release(owner)
+            try:
+                if device:
+                    await device.close()
+            finally:
+                self.store.release(owner)
 
 
 def safe_error(exc):
     if isinstance(exc, (DeviceUnavailable, ValueError)):
         return str(exc)
     if isinstance(exc, ModuleNotFoundError):
-        return 'ModuleNotFoundError: required Python module missing from runtime package'
+        return (
+            "ModuleNotFoundError: required Python module missing from runtime package"
+        )
     return f"{type(exc).__name__}: external service or local operation failed"

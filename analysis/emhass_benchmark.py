@@ -35,6 +35,12 @@ from src.manager.emhass_mpc import EmhassPlanner
 from src.manager.emhass_schedule import schedule_from_decisions
 from src.manager.settings import load_settings
 from src.manager.tariff import prices
+from src.manager.partial_charge import mask_stopped_charge
+from src.manager.charge_policy import (
+    full_charge_deadline,
+    remaining_premium,
+    premium_reservation,
+)
 
 
 def measurement_segments(path=ROOT / "data/emhass/household_5min.csv"):
@@ -126,6 +132,24 @@ def controls(pair, now):
     return charge, supply
 
 
+def split_partial_measurements(segments, pair, now, charge):
+    """Integrate the fixed-power prefix exactly at its planned stop deadline."""
+    cutoffs = [
+        datetime.fromisoformat(x["stop_at"])
+        for x in (pair or {}).get("early_stops", [])
+        if datetime.fromisoformat(x["start"]) == now
+    ]
+    cutoff = min(cutoffs) if cutoffs else now + timedelta(minutes=15)
+    elapsed = 0.0
+    for duration, load, pv, ev in segments:
+        start = now + timedelta(hours=elapsed)
+        end = start + timedelta(hours=duration)
+        bounds = [start] + ([cutoff] if start < cutoff < end else []) + [end]
+        for a, b in zip(bounds, bounds[1:]):
+            yield (b - a).total_seconds() / 3600, load, pv, ev, charge and a < cutoff
+        elapsed += duration
+
+
 def evaluate(
     start,
     end,
@@ -137,6 +161,8 @@ def evaluate(
     tag="pilot",
     pv_method="weather",
     trace=False,
+    policy_settings=None,
+    risk_errors=(),
 ):
     logging.disable(logging.CRITICAL)
     days, _excluded = load_history()
@@ -147,6 +173,10 @@ def evaluate(
     forecaster = Forecaster(days, "weather")
     exchange = Exchange(load_fx())
     planner = EmhassPlanner(settings)
+    planners = {p: EmhassPlanner(s) for p, s in (policy_settings or {}).items()}
+    full_at = {}
+    maintenance_states = {}
+    premium_banks = {}
     capacity = settings.effective_capacity_kwh or 17.2
     initial = capacity * 0.5
     energy = {p: initial for p in policies}
@@ -182,10 +212,24 @@ def evaluate(
                         (energy[p] - initial) * settings.discharge_efficiency * 0.10
                     )
             energy = {p: initial for p in policies}
+            full_at, maintenance_states, premium_banks = {}, {}, {}
             installed, pending, last_success, last_daily = {}, {}, {}, {}
             segments += 1
         previous = day
         daily = {p: Counter() for p in policies}
+        peak_price = float(
+            np.quantile(
+                [
+                    prices(
+                        float(actual.spot[j]),
+                        exchange.get(day),
+                        9 <= t.astimezone(PRAGUE).hour < 13,
+                    )[0]
+                    for j, t in enumerate(day_slots(day))
+                ],
+                0.75,
+            )
+        )
         for i, now in enumerate(day_slots(day)):
             for p in policies:
                 if p in pending:
@@ -237,11 +281,121 @@ def evaluate(
                 try:
                     if slots is None:
                         raise ValueError(forecast_error)
-                    if p == "emhass":
-                        decisions = planner.plan(slots, state)
+                    if p == "emhass" or p in planners:
+                        selected_settings = (policy_settings or {}).get(p, settings)
+                        selected_planner = planners.get(p, planner)
+                        planning_now = now
+                        current_pair = installed.get(p)
+                        # A short-charge cycle replans after its stop, using
+                        # measurements available at that later decision time.
+                        active_stops = [
+                            x
+                            for x in (current_pair or {}).get("early_stops", [])
+                            if datetime.fromisoformat(x["start"]) == now
+                        ]
+                        if active_stops:
+                            planning_now = min(
+                                datetime.fromisoformat(x["stop_at"])
+                                for x in active_stops
+                            )
+                            measured_energy = energy[p]
+                            active_charge, active_supply = controls(current_pair, now)
+                            elapsed = 0.0
+                            for (
+                                duration,
+                                load,
+                                pv,
+                                ev,
+                                segment_charge,
+                            ) in split_partial_measurements(
+                                measured[day][i], current_pair, now, active_charge
+                            ):
+                                if now + timedelta(hours=elapsed) >= planning_now:
+                                    break
+                                blocked = (
+                                    ev
+                                    if ev_mode == "inferred"
+                                    else (ev or load >= 6)
+                                    if ev_mode == "broad"
+                                    else False
+                                )
+                                measured_energy = step(
+                                    measured_energy,
+                                    load,
+                                    pv,
+                                    segment_charge,
+                                    settings.maximum_percent,
+                                    capacity,
+                                    settings,
+                                    active_supply and not blocked,
+                                    duration_hours=duration,
+                                )[0]
+                                elapsed += duration
+                            state = replace(
+                                state,
+                                timestamp=planning_now.isoformat(),
+                                soc_percent=measured_energy / capacity * 100,
+                            )
+                            current_pair = {
+                                **current_pair,
+                                "charge": mask_stopped_charge(
+                                    current_pair["charge"], active_stops[0]
+                                ),
+                            }
+                        args = {}
+                        if p in planners:
+                            maintenance = maintenance_states.setdefault(p, {})
+                            # Historical replay counts full-SOC opportunities as
+                            # maintenance proxies; it does not simulate BMS taper.
+                            if p in full_at:
+                                maintenance["last_calibration_at"] = full_at[
+                                    p
+                                ].isoformat()
+                            deadline = full_charge_deadline(
+                                selected_settings, maintenance, planning_now
+                            )
+                            args = {
+                                "errors": risk_errors,
+                                "premium_budget_eur": remaining_premium(
+                                    premium_banks.get(p, {}),
+                                    datetime.fromisoformat(slots[0].timestamp),
+                                    selected_settings.hedge_premium_eur,
+                                ),
+                                "full_charge_due": deadline is not None,
+                                "maintenance_deadline": deadline,
+                            }
+                        decisions = selected_planner.plan(slots, state, **args)
+                        risk = selected_planner.last_policy.get("buffer") or {}
+                        if risk:
+                            daily[p][
+                                "empirical_hedge_plans"
+                                if risk["source"].startswith("empirical")
+                                else "provisional_hedge_plans"
+                            ] += 1
                         proposal = schedule_from_decisions(
-                            decisions, slots, state, settings, installed.get(p)
+                            decisions, slots, state, selected_settings, current_pair
                         )
+                        if not proposal["first_action_projection"]:
+                            executed_at = datetime.fromisoformat(decisions[0].timestamp)
+                            bank = premium_banks.get(p, {})
+                            before = remaining_premium(
+                                bank, executed_at, selected_settings.hedge_premium_eur
+                            )
+                            premium_banks[p] = premium_reservation(
+                                bank,
+                                risk,
+                                decisions[0].timestamp,
+                                executed_at,
+                                selected_settings.hedge_premium_eur,
+                            )
+                            daily[p]["forecast_premium_bookings_eur"] += (
+                                before
+                                - remaining_premium(
+                                    premium_banks[p],
+                                    executed_at,
+                                    selected_settings.hedge_premium_eur,
+                                )
+                            )
                         daily[p]["projected_first_actions"] += int(
                             proposal["first_action_projection"]
                         )
@@ -272,7 +426,15 @@ def evaluate(
                 interval_initial = energy[p]
                 cash_before = daily[p]["cash_eur"]
                 load_energy = solar_energy = ev_hours = held_energy = 0.0
-                for duration, load, pv, ev in measured[day][i]:
+                for (
+                    duration,
+                    load,
+                    pv,
+                    ev,
+                    segment_charge,
+                ) in split_partial_measurements(
+                    measured[day][i], installed.get(p), now, charge
+                ):
                     blocked = ev if ev_mode == "inferred" else False
                     if ev_mode == "broad":
                         blocked = ev or load >= 6
@@ -299,7 +461,7 @@ def evaluate(
                                 energy[p],
                                 load,
                                 pv,
-                                charge,
+                                segment_charge,
                                 settings.maximum_percent,
                                 capacity,
                                 settings,
@@ -333,6 +495,7 @@ def evaluate(
                     d["cash_eur"] += imported * buy - exported * sell
                     d["wear_eur"] += discharged * settings.wear_eur_per_kwh
                     d["grid_import_kwh"] += imported
+                    d["expensive_import_kwh"] += imported if buy >= peak_price else 0
                     d["grid_export_kwh"] += exported
                     d["battery_discharge_kwh"] += discharged
                     d["grid_charge_kwh"] += grid
@@ -344,6 +507,16 @@ def evaluate(
                     d["reserve_violations"] += int(
                         energy[p] < capacity * settings.reserve_percent / 100 - 1e-7
                     )
+                    if energy[p] >= capacity * 0.99999:
+                        if p not in full_at or now - full_at[p] > timedelta(hours=1):
+                            daily[p]["full_charge_events"] += 1
+                        full_at[p] = now
+                for intent in (installed.get(p) or {}).get("early_stops", []):
+                    if datetime.fromisoformat(intent["start"]) == now:
+                        installed[p]["charge"] = mask_stopped_charge(
+                            installed[p]["charge"], intent
+                        )
+                        daily[p]["early_stops"] += 1
                 daily[p]["held_eligible_demand_kwh"] += held_energy
                 if trace:
                     interval_records.append(
@@ -431,11 +604,15 @@ def evaluate(
         "days": len(records) // len(policies),
         "segments": segments,
         "settings": settings.model_dump(mode="json"),
+        "policy_settings": {
+            p: s.model_dump(mode="json") for p, s in (policy_settings or {}).items()
+        },
         "policies": summary,
         "skipped": skips,
         "limitations": [
             "EV sessions inferred; no dedicated EV meter. Complete-session labels score interlock timing only, never forecast inputs.",
             "Ideal atomic next-quarter schedule application; API write jitter and failures not simulated.",
+            "Forecast insurance bookings are attributed to planning day; execution-day ledger caps are enforced separately.",
             "Historic HDO09:00–13:00 assumed, verified only2026-10-20 to26.",
             "Battery model and wear assumptions are not independent physical savings measurements.",
         ],

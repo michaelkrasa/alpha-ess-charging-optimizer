@@ -117,6 +117,9 @@ def create_app(
         ensure_password()
     store = store or make_store(settings)
     controller = controller or Controller(settings, store, live=live)
+    controller.deadline_executor_active = bool(
+        poll and getattr(controller, "live", False)
+    )
     wake = asyncio.Event()
 
     async def loop():
@@ -164,16 +167,42 @@ def create_app(
                 pass
             await asyncio.sleep(60)
 
+    async def stop_loop():
+        while True:
+            try:
+                await controller.stop_charge_once()
+            except BusyError:
+                pass
+            except Exception as exc:
+                from .controller import safe_error
+
+                store.put(
+                    "early_stop_health",
+                    {
+                        "status": "pending",
+                        "message": safe_error(exc),
+                        "timestamp": utc_now().isoformat(),
+                    },
+                )
+            await asyncio.sleep(5)
+
     @asynccontextmanager
     async def lifespan(app):
         task = asyncio.create_task(loop()) if poll else None
+        stopper = (
+            asyncio.create_task(stop_loop())
+            if poll
+            and getattr(controller, "live", False)
+            and settings.charge_step_minutes < 15
+            else None
+        )
         monitor = (
             asyncio.create_task(monitor_loop())
             if poll and getattr(controller, "live", False)
             else None
         )
         yield
-        for running in (task, monitor):
+        for running in (task, monitor, stopper):
             if not running:
                 continue
             running.cancel()
@@ -295,6 +324,23 @@ def create_app(
             "energy_day": energy,
             "daily_energy": dashboard_daily_totals(store, now),
             "soc_tracking": dashboard_soc(store, now, energy),
+            "charge_policy": (store.get("plan") or {}).get("charge_policy"),
+            "full_charge": store.get("full_charge"),
+            "early_stops": store.get("early_stops", []),
+            "early_stop_health": store.get("early_stop_health"),
+            "early_stop_commission": store.get("early_stop_commission"),
+            "charge_policy_settings": {
+                k: getattr(controller.settings, k)
+                for k in (
+                    "charge_step_minutes",
+                    "early_stop_verified",
+                    "hedge_enabled",
+                    "hedge_quantile",
+                    "hedge_max_kwh",
+                    "hedge_premium_eur",
+                    "full_charge_interval_days",
+                )
+            },
             "plan": plan,
             "replay": store.get("replay"),
             "actuation": store.get("actuation"),

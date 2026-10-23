@@ -32,6 +32,14 @@ class Settings(BaseModel):
     exclude_inferred_grid_only_ev: bool = False
     standard_planner: str = "candidate"
     emhass_shadow: bool = False
+    charge_step_minutes: int = 15
+    early_stop_verified: bool = False
+    hedge_enabled: bool = False
+    hedge_quantile: float = Field(default=0.8, ge=0.5, le=0.99)
+    hedge_max_kwh: float = Field(default=2, gt=0, le=10)
+    hedge_premium_eur: float = Field(default=0.10, ge=0, le=5)
+    hedge_min_days: int = Field(default=14, ge=3, le=60)
+    full_charge_interval_days: int = Field(default=0, ge=0, le=90)
     publication_hour: int = 15
     tariff_source: str = "bezdodavatele-2026"
     # Local wall-clock VT periods, supplied by the household's HDO schedule.
@@ -58,6 +66,20 @@ class Settings(BaseModel):
             raise ValueError("Capacity scenarios must be finite positive kWh values")
         if self.control_mode not in {"periodic", "legacy_daily"}:
             raise ValueError("control_mode must be periodic or legacy_daily")
+        if self.charge_step_minutes not in (5, 15):
+            raise ValueError("charge_step_minutes must be 5 or 15")
+        if (
+            self.charge_step_minutes != 15
+            or self.hedge_enabled
+            or self.full_charge_interval_days
+        ) and (
+            self.control_mode != "legacy_daily" or self.standard_planner != "emhass"
+        ):
+            raise ValueError(
+                "Risk, partial charging and maintenance require the EMHASS standard-window planner"
+            )
+        if self.full_charge_interval_days and self.maximum_percent != 100:
+            raise ValueError("Periodic full charging requires maximum_percent=100")
         if self.standard_planner not in {"candidate", "emhass"}:
             raise ValueError("standard_planner must be candidate or emhass")
         if self.standard_planner == "emhass" and self.control_mode != "legacy_daily":

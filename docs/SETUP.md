@@ -51,6 +51,14 @@ Standard daily windows are rewritten during the day, but remain on the inverter 
 
 The optimizer uses published prices only and can charge to 100% when justified after losses, wear and expected solar. It plans over the available horizon, which can extend into tomorrow. Solver success and speed must be checked on the actual host; Mac performance is not proof of NAS performance.
 
+Optional [forecast-risk buffers, partial charging and periodic full charging](HEDGING.md)
+retain the standard-window EMHASS planner. Five-minute charging needs the
+continuous server's deadline executor and separate stop/readback/measured-power
+commissioning (`early_stop_verified`). One-shot and Lambda control cannot use
+that mode. The configurable full-charge interval addresses observed SOC/taper
+maintenance; it does not assert a universal LFP degradation rate. All three
+policies are disabled by default in the example configuration.
+
 ## Development preview
 
 Use the local HTML with read-only state from an existing manager:

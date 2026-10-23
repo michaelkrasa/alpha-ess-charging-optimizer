@@ -91,6 +91,7 @@ class Decision:
     load_kw: float
     solar_kw: float
     reason: str
+    charge_minutes: int | None = None
 
     def dict(self):
         return asdict(self)

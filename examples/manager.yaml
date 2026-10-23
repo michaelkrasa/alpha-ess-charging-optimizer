@@ -2,6 +2,16 @@
 control_mode: legacy_daily
 standard_planner: emhass
 emhass_shadow: false
+# Opt-in policies; see docs/HEDGING.md. Commission short stops before live use.
+charge_step_minutes: 15
+early_stop_verified: false
+hedge_enabled: false
+hedge_quantile: 0.8
+hedge_max_kwh: 2
+hedge_premium_eur: 0.10
+hedge_min_days: 14
+# 0 disables maintenance; 14 days is an example SOC-calibration interval.
+full_charge_interval_days: 0
 timezone: Europe/Prague
 interval_minutes: 15
 reserve_percent: 10

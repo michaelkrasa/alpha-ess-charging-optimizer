@@ -12,6 +12,10 @@ This is still an **AlphaESS/Czech deployment**, not a generic European energy pl
 
 ## Build versus integrate
 
+Opt-in control policies: [forecast-risk buffers, partial-window charging and periodic full charge](../docs/HEDGING.md).
+Implementation and replay evidence are tracked in [hedging validation](hedging_validation.md).
+Physical short-stop commissioning and live activation remain separate requirements.
+
 | Existing project | Overlap and decision |
 | --- | --- |
 | [EMHASS](https://emhass.readthedocs.io/en/latest/study_cases/mpc.html) | Already provides rolling optimization from refreshed SOC, forecasts and prices. **Keep it as the planner dependency.** Contribute reusable appliance constraints upstream where appropriate; keep protocol translation and readbacks here. EMHASS uses an [MIT license](https://github.com/davidusb-geek/emhass/blob/master/LICENSE). |

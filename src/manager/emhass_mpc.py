@@ -19,8 +19,9 @@ import numpy as np
 import pandas as pd
 from emhass.optimization import Optimization
 
-from .daily import step, validate_standard_horizon
+from .daily import validate_standard_horizon
 from .domain import Decision
+from .charge_policy import buffer_request, maintenance_target
 
 
 def _defaults():
@@ -56,6 +57,14 @@ class ApplianceOptimization(Optimization):
         self.terminal_value = cp.Parameter(
             nonneg=True, name="stored_energy_value_eur_wh"
         )
+        self.hedge_anchor = cp.Parameter(n, nonneg=True)
+        self.hedge_floor = cp.Parameter()
+        self.hedge_limit = cp.Parameter(nonneg=True)
+        self.hedge_reward = cp.Parameter(nonneg=True)
+        self.full_anchor = cp.Parameter(n, nonneg=True)
+        self.full_required = cp.Parameter(nonneg=True)
+        self.full_finish = cp.Parameter(n, nonneg=True)
+        self.hedged_energy = cp.Variable(nonneg=True)
         super().__init__(*args, **kwargs)
 
     def _build_objective_function(self, *args, **kwargs):
@@ -65,7 +74,9 @@ class ApplianceOptimization(Optimization):
         correction = (self.terminal_value - self.param_soc_final_reward) * sum(
             self.vars["soc_final_over"]
         )
-        return cp.Maximize(base.args[0] + correction)
+        return cp.Maximize(
+            base.args[0] + correction + self.hedge_reward * self.hedged_energy
+        )
 
     def _add_battery_constraints(self, constraints, batt_stress_conf):
         super()._add_battery_constraints(constraints, batt_stress_conf)
@@ -82,6 +93,12 @@ class ApplianceOptimization(Optimization):
         full = cp.Variable(n, boolean=True, name="appliance_charge_saturated")
         empty = cp.Variable(n, boolean=True, name="appliance_discharge_saturated")
         self.appliance_modes = (mode_c, mode_d)
+        if s.charge_step_minutes < 15:
+            units = cp.Variable(n, integer=True, name="charge_five_minute_units")
+            constraints.extend([units >= mode_c, units <= 3 * mode_c])
+            self.charge_fraction = units / 3
+        else:
+            self.charge_fraction = mode_c
         delta = (charge * s.charge_efficiency - discharge / s.discharge_efficiency) * dt
         previous = cp.hstack(
             [
@@ -96,7 +113,7 @@ class ApplianceOptimization(Optimization):
             (previous - cap * s.reserve_percent / 100) * s.discharge_efficiency / dt
         )
         target_c = self.native_charge + cp.multiply(
-            s.charge_kw * 1000 - self.native_charge, mode_c
+            s.charge_kw * 1000 - self.native_charge, self.charge_fraction
         )
         target_d = cp.multiply(self.native_discharge, mode_d)
         mc = cap / (s.charge_efficiency * dt) + s.charge_kw * 1000
@@ -105,6 +122,7 @@ class ApplianceOptimization(Optimization):
             [
                 mode_c + mode_d <= 1,
                 mode_c <= self.charge_mode_allowed,
+                self.charge_fraction >= self.full_finish,
                 charge <= target_c,
                 charge <= charge_space,
                 charge >= target_c - mc * full,
@@ -120,12 +138,22 @@ class ApplianceOptimization(Optimization):
                 discharge >= discharge_space - md * (1 - empty),
             ]
         )
+        cumulative = cp.cumsum(delta)
+        constraints.extend(
+            [
+                self.hedged_energy <= self.hedge_limit,
+                self.hedged_energy
+                <= cp.sum(cp.multiply(self.hedge_anchor, cumulative))
+                - self.hedge_floor,
+                cp.sum(cp.multiply(self.full_anchor, cumulative)) >= self.full_required,
+            ]
+        )
         if s.import_limit_kw is not None:
             # Explicit user configuration only. No cap is inferred by default.
             bound = self.plant_conf["maximum_power_from_grid"]
             net_load = self.param_load_forecast - self.param_pv_forecast
             constraints.append(
-                net_load + charge - discharge
+                net_load + s.charge_kw * 1000
                 <= s.import_limit_kw * 1000 + bound * (1 - mode_c)
             )
 
@@ -213,13 +241,28 @@ class EmhassPlanner:
         self.cache[key] = obj
         return obj
 
-    def plan(self, slots, telemetry):
+    def plan(
+        self,
+        slots,
+        telemetry,
+        *,
+        errors=(),
+        full_charge_due=False,
+        maintenance_deadline=None,
+        premium_budget_eur=None,
+    ):
         if len(slots) < 5:
             raise ValueError("EMHASS MPC needs at least five known-price intervals")
         validate_standard_horizon(slots)
         s = self.settings
         capacity = s.effective_capacity_kwh or telemetry.capacity_kwh
         obj = self._optimizer(slots, capacity)
+        self.last_policy = {"buffer": None, "maintenance": "not_due"}
+        obj.hedge_anchor.value = np.zeros(len(slots))
+        obj.hedge_floor.value = obj.hedge_limit.value = obj.hedge_reward.value = 0.0
+        obj.full_anchor.value = np.zeros(len(slots))
+        obj.full_required.value = 0.0
+        obj.full_finish.value = np.zeros(len(slots))
         index = pd.DatetimeIndex([datetime.fromisoformat(r.timestamp) for r in slots])
         load = pd.Series([r.load_kw * 1000 for r in slots], index=index)
         pv = pd.Series([r.solar_kw * 1000 for r in slots], index=index)
@@ -256,6 +299,34 @@ class EmhassPlanner:
             else float(self.terminal)
         )
         obj.terminal_value.value = terminal / 1000
+        if full_charge_due:
+            # Find the cheapest feasible prefix fill; the solver chooses its
+            # actual charging inside that prefix. No unknown prices are used.
+            needed = max(0.0, capacity * (1 - telemetry.soc_percent / 100))
+            allowed = [
+                bool(obj.charge_mode_allowed.value[i])
+                and (
+                    s.import_limit_kw is None
+                    or slot.load_kw - slot.solar_kw + s.charge_kw
+                    <= s.import_limit_kw + 1e-7
+                )
+                for i, slot in enumerate(slots)
+            ]
+            anchor = maintenance_target(slots, allowed, needed, s, maintenance_deadline)
+            if anchor is not None:
+                obj.full_anchor.value[anchor] = 1
+                obj.full_required.value = needed * 1000
+                # Leave charging enabled through a further quarter for native
+                # taper/balancing observation, rather than cutting it at 100%.
+                obj.full_finish.value[anchor : anchor + 2] = 1
+                self.last_policy["maintenance"] = {
+                    "target_at": slots[anchor].timestamp,
+                    "target_soc": 100,
+                }
+            else:
+                self.last_policy["maintenance"] = (
+                    "pending: insufficient executable priced horizon"
+                )
         started = time.monotonic()
         result = obj.perform_naive_mpc_optim(
             data,
@@ -265,37 +336,157 @@ class EmhassPlanner:
             soc_init=telemetry.soc_percent / 100,
             soc_final=s.reserve_percent / 100,
         )
+        baseline_profit = (
+            float(obj.prob.value) if obj.optim_status == "Optimal" else None
+        )
+        baseline_first_minutes = (
+            int(round(float(obj.charge_fraction.value[0]) * 15))
+            if self.exact and baseline_profit is not None
+            else 0
+        )
+        baseline_first_supply = (
+            bool(obj.appliance_modes[1].value[0] > 0.5)
+            if self.exact and baseline_profit is not None
+            else False
+        )
+        fallback = None
+        if (
+            self.exact
+            and baseline_profit is not None
+            and result is not None
+            and not result.empty
+        ):
+            fallback = (
+                result.copy(deep=True),
+                tuple(np.array(mode.value, copy=True) for mode in obj.appliance_modes),
+                np.array(obj.charge_fraction.value, copy=True),
+                obj.prob.solver_stats.extra_stats if obj.prob.solver_stats else None,
+            )
+        risk_failed = False
+        request = buffer_request(slots, s, errors) if self.exact else None
+        if request and premium_budget_eur is not None:
+            request["premium_eur"] = min(
+                request["premium_eur"], max(0.0, premium_budget_eur)
+            )
+        if (
+            request
+            and request["buffer_kwh"] > 1e-7
+            and obj.optim_status == "Optimal"
+            and result is not None
+            and not result.empty
+        ):
+            anchor = request["anchor"]
+            baseline = float(result.iloc[anchor]["SOC_opt"]) * capacity * 1000
+            extra = min(
+                request["buffer_kwh"] * 1000,
+                max(0.0, capacity * s.maximum_percent * 10 - baseline),
+            )
+            if extra > 1e-5 and request["premium_eur"] > 0:
+                obj.hedge_anchor.value[anchor] = 1
+                obj.hedge_floor.value = baseline - capacity * telemetry.soc_percent * 10
+                obj.hedge_limit.value = extra
+                obj.hedge_reward.value = request["premium_eur"] / extra
+                try:
+                    result = obj.perform_naive_mpc_optim(
+                        data,
+                        pv,
+                        load,
+                        prediction_horizon=len(slots),
+                        soc_init=telemetry.soc_percent / 100,
+                        soc_final=s.reserve_percent / 100,
+                    )
+                    risk_failed = (
+                        obj.optim_status != "Optimal" or result is None or result.empty
+                    )
+                except Exception:
+                    risk_failed = True
+            self.last_policy["buffer"] = {
+                **request,
+                "effective_buffer_kwh": extra / 1000,
+            }
+            if (
+                not risk_failed
+                and obj.optim_status == "Optimal"
+                and result is not None
+                and not result.empty
+            ):
+                reward = float(obj.hedge_reward.value) * float(obj.hedged_energy.value)
+                self.last_policy["buffer"].update(
+                    {
+                        "forecast_premium_eur": max(
+                            0.0, baseline_profit - (float(obj.prob.value) - reward)
+                        ),
+                        "first_action_changed": (
+                            int(round(float(obj.charge_fraction.value[0]) * 15))
+                            != baseline_first_minutes
+                            or bool(obj.appliance_modes[1].value[0] > 0.5)
+                            != baseline_first_supply
+                        ),
+                        "first_extra_minutes": max(
+                            0,
+                            int(round(float(obj.charge_fraction.value[0]) * 15))
+                            - baseline_first_minutes,
+                        ),
+                        "planned_extra_kwh": max(
+                            0.0,
+                            float(result.iloc[anchor]["SOC_opt"]) * capacity
+                            - baseline / 1000,
+                        ),
+                    }
+                )
         info = obj.prob.solver_stats.extra_stats if obj.prob.solver_stats else None
+        modes = (
+            tuple(np.array(mode.value, copy=True) for mode in obj.appliance_modes)
+            if self.exact and not risk_failed
+            else None
+        )
+        fractions = (
+            np.array(obj.charge_fraction.value, copy=True)
+            if self.exact and not risk_failed
+            else None
+        )
+        status = str(obj.optim_status)
+        if risk_failed and fallback:
+            result, modes, fractions, info = fallback
+            self.last_policy["buffer"]["status"] = (
+                "risk solve unavailable; certified nominal plan retained"
+            )
+            status = "Optimal"
         self.last_solve = {
             "intervals": len(slots),
             "seconds": round(time.monotonic() - started, 3),
-            "status": str(obj.optim_status),
+            "status": status,
+            "risk_fallback": risk_failed,
             "mip_gap": getattr(info, "mip_gap", None),
             "relative_gap_limit": 0.001,
             "time_limit_seconds": 60,
         }
-        if obj.optim_status != "Optimal" or result is None or result.empty:
+        if status != "Optimal" or result is None or result.empty:
             raise ValueError(
                 "EMHASS did not return an optimal feasible plan: "
                 + str(obj.optim_status)
             )
         decisions = []
         energy = capacity * telemetry.soc_percent / 100
-        modes = obj.appliance_modes if self.exact else None
         for i, (slot, (_, r)) in enumerate(zip(slots, result.iterrows())):
             if modes:
                 action = (
                     "charge"
-                    if modes[0].value[i] > 0.5
+                    if modes[0][i] > 0.5
                     else "self_consume"
-                    if modes[1].value[i] > 0.5
+                    if modes[1][i] > 0.5
                     else "hold"
                 )
-                flow = step(
+                minutes = (
+                    int(round(float(fractions[i]) * 15)) if action == "charge" else 0
+                )
+                from .partial_charge import partial_step
+
+                flow = partial_step(
                     energy,
                     slot.load_kw,
                     slot.solar_kw,
-                    action == "charge",
+                    minutes,
                     s.maximum_percent,
                     capacity,
                     s,
@@ -330,6 +521,7 @@ class EmhassPlanner:
                     "EMHASS rolling MPC with fixed-power appliance constraints."
                     if self.exact
                     else "EMHASS continuous-power reference; not an executable AlphaESS command.",
+                    minutes if self.exact and action == "charge" else None,
                 )
             )
         return decisions
