@@ -1,5 +1,5 @@
 # Optional container build. ZIP packaging is preferred to avoid ECR storage costs.
-FROM public.ecr.aws/lambda/python:3.12
+FROM public.ecr.aws/lambda/python:3.14
 COPY requirements-lambda.txt ${LAMBDA_TASK_ROOT}/
 RUN pip install --no-cache-dir -r requirements-lambda.txt
 COPY src/ ${LAMBDA_TASK_ROOT}/src/
