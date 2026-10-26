@@ -19,7 +19,7 @@ Fill `APP_ID`, `APP_SECRET` and `SERIAL_NUMBER` using your AlphaESS OpenAPI cred
 
 ## Prices, tariffs and forecasts
 
-`price_source: ote` uses Czech day-ahead prices. `price_source: entsoe` uses `ENTSOE_TOKEN` and `entsoe_area`. Both are expressed in EUR. The controller aligns 15-minute decisions to price interval timestamps.
+`price_source: ote` uses Czech day-ahead prices. `price_source: entsoe` uses `ENTSOE_TOKEN` and `entsoe_area`. Both are expressed in EUR. The continuous server checks its plan on five-minute clock boundaries. Price and inverter decisions still align to 15-minute interval timestamps; write spacing, readiness checks and readback remain in force.
 
 The current tariff adapter is Czech and contract-specific (`src/manager/tariff.py`). ENTSO-E prices alone do not include import taxes, network fees, VAT or export terms. Verify those before using another contract or country. Time handling includes Prague assumptions; general timezone support is roadmap work.
 
@@ -75,6 +75,6 @@ The price chart overlays expected and measured battery charge on a 0–100% axis
 
 After a confirmed active plan, future SOC expectations are saved and may update until their interval begins. Past expectations are retained unchanged. A new installation therefore shows measured history immediately when available, but cannot invent historical predictions; comparisons accumulate prospectively. Deltas reflect forecast and execution differences, including manual intervention. Day summaries describe the current plan and import-price peaks; they do not promise savings.
 
-The amber solar strip shares the price chart’s exact time axis and shows forecast production beside measurements. The solar card also shows daily generation and total battery charging from the AlphaESS daily-energy counters, refreshed about every 15 minutes. Battery charging includes solar and grid; it is not labelled as solar-only charging. Unavailable totals remain blank, and yesterday’s totals are hidden after local midnight.
+The solar strip in Forecast detail shares the price chart’s exact time axis and shows forecast production beside measurements. The expanded meter details show daily generation and total battery charging from the AlphaESS daily-energy counters, refreshed about every 15 minutes. Battery charging includes solar and grid; it is not labelled as solar-only charging. Unavailable totals remain blank, and yesterday’s totals are hidden after local midnight.
 
 Dotted links at Now connect the latest known SOC to the forecast. They hold the latest reading until Now and interpolate toward the first forecast point; they are display estimates, never stored as measurements or used to calculate forecast-error deltas.

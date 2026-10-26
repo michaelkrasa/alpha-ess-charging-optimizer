@@ -84,7 +84,7 @@ def sample_state():
                 'timestamp': stamp(now), 'message': 'Simulated settings confirmation; no inverter is connected.'},
             'standard_planner': 'emhass', 'planner_comparison': None, 'load_profile': {},
             'replay': None, 'readiness': [], 'live': True, 'reserve_percent': 10,
-            'import_limit_kw': None, 'price_source': 'demo', 'control_mode': 'legacy_daily',
+            'import_limit_kw': None, 'price_source': 'demo', 'control_mode': 'legacy_daily', 'control_check_minutes': 5,
             'write_interval_seconds': 10, 'daily_write': None, 'history': []}
 
 

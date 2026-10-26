@@ -20,7 +20,7 @@ from .controller import Controller
 from .energy_day import dashboard_daily_totals, dashboard_energy
 from .soc_tracking import dashboard_soc
 from .plan_insight import explain_plan
-from .domain import PRAGUE, day_slots, next_boundary, utc_now
+from .domain import PRAGUE, UTC, day_slots, utc_now
 from .settings import load_settings
 from .store import BusyError, make_store
 from .tariff import high_tariff, prices, schedule_verified
@@ -71,9 +71,15 @@ def dashboard_prices(store, settings, now):
     return result
 
 
+CONTROL_CHECK_SECONDS = 300
+
+
 def poll_timeout(now, actuation=None):
-    """Wake at a pending daily write deadline as well as quarter-hour ticks."""
-    timeout = (next_boundary(now) - now).total_seconds()
+    """Wake at five-minute checks or an earlier pending write deadline."""
+    next_check = datetime.fromtimestamp(
+        (int(now.timestamp()) // CONTROL_CHECK_SECONDS + 1) * CONTROL_CHECK_SECONDS, UTC
+    )
+    timeout = (next_check - now).total_seconds()
     if actuation and actuation.get("status") == "waiting":
         try:
             deadline = datetime.fromisoformat(actuation["next_write_at"])
@@ -356,6 +362,7 @@ def create_app(
             "import_limit_kw": settings.import_limit_kw,
             "price_source": settings.price_source,
             "control_mode": settings.control_mode,
+            "control_check_minutes": CONTROL_CHECK_SECONDS // 60 if poll else None,
             "write_interval_seconds": settings.legacy_min_write_interval_seconds,
             "daily_write": max(
                 (

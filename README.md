@@ -19,21 +19,20 @@ Full-size charts. Today and tomorrow. Try the controls. **Synthetic data; no acc
 
 </div>
 
-Charge when the expected savings justify it. Keep energy for expensive periods. Leave room for solar. Replan every **15 minutes** from measured SOC, published prices, household demand and a weather-based PV forecast.
+Charge when the expected savings justify it. Keep energy for expensive periods. Leave room for solar. On the continuous server, recheck the plan every **5 minutes** using measured SOC, published prices, household demand and a weather-based PV forecast. Price and inverter decisions remain on 15-minute intervals.
 
 **EMHASS does the optimization.** This project adds AlphaESS control, executable schedule translation, confirmation, history and the dashboard. Prices come from OTE or ENTSO-E; calculations and displays use EUR.
 
 ## See the plan, see what’s set
 
-| At a glance | Through the day |
+| Daily view | Open for detail |
 | --- | --- |
-| Battery charge, measured activity and solar output | Today/tomorrow prices on a linear scale |
-| Automatic management ON/OFF and connection freshness | Proposed actions beside settings read back from the inverter |
-| Next import price, daily min/max/mean | Expected vs measured battery charge, quarter-hour deltas |
-| Solar generation and battery charging totals today | Solar forecast aligned with price intervals |
-| Short daily plan summaries | Solar and site demand filling in from midnight |
+| Price and battery outlook | Solar forecast and forecast notes |
+| On-inverter and proposed schedule | Quarter-hour decisions |
+| Inverter readback status | Connection and controller diagnostics |
+| Battery, solar and demand in one tile | Meter totals and measured history |
 
-[Explore the dashboard in your browser →](https://michaelkrasa.github.io/alpha-ess-charging-optimizer/) Switch days, inspect prices, expand the schedule, and try ON/OFF. The sample uses the real dashboard with synthetic data. It works on desktop, tablet and phone, and can be downloaded as one self-contained HTML file.
+[Explore the dashboard in your browser →](https://michaelkrasa.github.io/alpha-ess-charging-optimizer/) Inspect prices, compare the confirmed and proposed plan, and try ON/OFF. Tomorrow appears when its prices are published. The sample uses the real dashboard with synthetic data. It works on desktop, tablet and phone, and can be downloaded as one self-contained HTML file.
 
 
 ## How it works

@@ -11,7 +11,7 @@ from src.manager.settings import Settings
 from src.manager.store import SQLiteStore
 
 
-def test_daily_budget_wakes_between_quarter_hours():
+def test_daily_budget_wakes_between_five_minute_checks():
     now = datetime(2026, 10, 21, 13, tzinfo=UTC)
     deadline = now + timedelta(seconds=100)
     assert (
@@ -37,7 +37,12 @@ def test_daily_budget_wakes_between_quarter_hours():
 )
 def test_stale_or_unusable_budget_deadlines_do_not_spin_or_skip_monitoring(actuation):
     now = datetime(2026, 10, 21, 13, tzinfo=UTC)
-    assert web.poll_timeout(now, actuation) == 900
+    assert web.poll_timeout(now, actuation) == 300
+
+
+def test_five_minute_check_aligns_to_clock_boundary():
+    now = datetime(2026, 10, 21, 13, 3, 40, tzinfo=UTC)
+    assert web.poll_timeout(now) == 80
 
 
 def test_imminent_deadline_has_a_bounded_retry_interval():
