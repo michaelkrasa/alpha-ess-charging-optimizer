@@ -14,7 +14,6 @@ def schedule_verified(at, settings):
     return (
         settings.high_tariff_periods is not None
         and (settings.tariff_valid_from is None or day >= settings.tariff_valid_from)
-        and (settings.tariff_valid_until is None or day < settings.tariff_valid_until)
     )
 
 

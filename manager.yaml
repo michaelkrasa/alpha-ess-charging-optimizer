@@ -21,7 +21,6 @@ publication_hour: 15
 # Czech tariff adapter currently requires your verified high-tariff periods.
 high_tariff_periods: null
 tariff_valid_from: null
-tariff_valid_until: null
 hold_verified: false
 device_control_verified: false
 solar_config_path: solar_config.yaml

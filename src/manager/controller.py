@@ -143,7 +143,7 @@ class Controller:
             gaps.append("Observation mode: device writes are disabled.")
         if not schedule_verified(utc_now(), self.settings):
             gaps.append(
-                "HDO high/low tariff times are missing or outside their verified date range."
+                "HDO high/low tariff times are missing or not yet valid."
             )
         if not self.settings.device_control_verified:
             gaps.append(

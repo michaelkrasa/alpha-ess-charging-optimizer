@@ -23,7 +23,7 @@ Fill `APP_ID`, `APP_SECRET` and `SERIAL_NUMBER` using your AlphaESS OpenAPI cred
 
 The current tariff adapter is Czech and contract-specific (`src/manager/tariff.py`). ENTSO-E prices alone do not include import taxes, network fees, VAT or export terms. Verify those before using another contract or country. Time handling includes Prague assumptions; general timezone support is roadmap work.
 
-Configure verified high-tariff periods and the dates over which they apply. Missing/expired verification blocks new live schedules. Fixed standing charges do not belong in marginal charging decisions.
+Configure verified high-tariff periods and, optionally, their start date. Missing periods or a future start date block new live schedules. Periods do not expire automatically: review them when the distributor changes the HDO schedule. The removed `tariff_valid_until` setting in older configurations is ignored. Fixed standing charges do not belong in marginal charging decisions.
 
 Household demand uses recent measured history. Solar combines Open-Meteo tilted irradiance and calibration against measured production. An installation without adequate history/calibration may be unable to plan initially; inspect the error instead of inventing zero consumption or solar. `exclude_inferred_grid_only_ev` is opt-in: it infers sessions for a particular grid-only EV topology and is not a universal EV detector.
 

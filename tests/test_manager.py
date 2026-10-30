@@ -12,7 +12,7 @@ from src.manager.planner import optimize
 from src.manager.providers import parse_entsoe
 from src.manager.settings import Settings
 from src.manager.store import SQLiteStore, BusyError
-from src.manager.tariff import prices, high_tariff
+from src.manager.tariff import prices, high_tariff, schedule_verified
 from src.manager.web import create_app
 
 
@@ -58,6 +58,16 @@ def test_distribution_schedule_can_cross_midnight():
     assert high_tariff(datetime(2026, 10, 20, 23, tzinfo=PRAGUE), [["22:00", "02:00"]])
     assert not high_tariff(
         datetime(2026, 10, 20, 12, tzinfo=PRAGUE), [["22:00", "02:00"]]
+    )
+
+
+def test_old_tariff_expiry_does_not_block_configured_schedule():
+    settings = Settings(high_tariff_periods=[["09:00", "13:00"]], tariff_valid_until="2026-10-27")
+    assert schedule_verified(datetime(2026, 10, 27, 12, tzinfo=PRAGUE), settings)
+    assert not schedule_verified(datetime(2026, 10, 27, 12, tzinfo=PRAGUE), Settings())
+    assert not schedule_verified(
+        datetime(2026, 10, 27, 12, tzinfo=PRAGUE),
+        Settings(high_tariff_periods=[["09:00", "13:00"]], tariff_valid_from="2026-10-28"),
     )
 
 

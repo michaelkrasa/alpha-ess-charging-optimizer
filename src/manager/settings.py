@@ -45,7 +45,6 @@ class Settings(BaseModel):
     # Local wall-clock VT periods, supplied by the household's HDO schedule.
     high_tariff_periods: list[list[str]] | None = None
     tariff_valid_from: date | None = None
-    tariff_valid_until: date | None = None
     # Hold semantics must be observed on the actual inverter, not inferred by model.
     hold_verified: bool = False
     # Never set this implicitly: preserves monitoring when hardware isn't verified.
