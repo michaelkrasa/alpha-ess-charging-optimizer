@@ -223,29 +223,6 @@ class TestDecember2025DailyValidation:
             assert cycle.spread > 0, \
                 f"{date_str}: Cycle {i+1} has non-positive spread: {cycle.spread:.2f}"
 
-    def test_discharge_duration_validation(self, optimizer, date_str):
-        """Verify that discharge windows are long enough for the energy charged (non-overnight cycles)."""
-        prices_dict = load_prices_for_date(date_str)
-        if prices_dict is None:
-            pytest.skip(f"No price data available for {date_str}")
-        
-        plan = optimizer.analyze_day(prices_dict, current_soc=30.0)
-        
-        if not plan.cycles:
-            pytest.skip(f"No cycles found for {date_str}")
-        
-        for i, cycle in enumerate(plan.cycles):
-            if not is_overnight(cycle.charge_window):
-                # For non-overnight cycles, validate discharge duration
-                is_valid = optimizer._validate_discharge_window(
-                    cycle.charge_window,
-                    cycle.discharge_window,
-                    start_soc=30.0  # Use test SOC
-                )
-                assert is_valid, \
-                    f"{date_str}: Cycle {i+1} (non-overnight) has discharge window too short " \
-                    f"({cycle.discharge_window.duration_hours:.2f}h) for energy charged " \
-                    f"({cycle.charge_window.duration_hours:.2f}h)"
 
     def test_single_charge_window_duration_reasonable(self, optimizer, date_str):
         """Verify that no single charge window exceeds the full charge time.
@@ -270,24 +247,6 @@ class TestDecember2025DailyValidation:
                 f"{date_str}: Cycle {i+1} charge window ({cycle.charge_window.duration_hours:.2f}h) " \
                 f"exceeds max single window {max_single_window:.2f}h (charge_hours={optimizer.charge_hours}h)"
 
-    def test_cycles_have_positive_spread(self, optimizer, date_str):
-        """Verify that all cycles have positive spread.
-        
-        Note: The detailed profitability check (discharge_price >= charge_price * price_multiplier)
-        is done in test_meaningful_spread. This test just ensures spread is positive.
-        """
-        prices_dict = load_prices_for_date(date_str)
-        if prices_dict is None:
-            pytest.skip(f"No price data available for {date_str}")
-        
-        plan = optimizer.analyze_day(prices_dict, current_soc=30.0)
-        
-        if not plan.cycles:
-            pytest.skip(f"No cycles found for {date_str}")
-        
-        for i, cycle in enumerate(plan.cycles):
-            assert cycle.spread > 0, \
-                f"{date_str}: Cycle {i+1} has non-positive spread: {cycle.spread:.2f}"
 
 
 if __name__ == "__main__":

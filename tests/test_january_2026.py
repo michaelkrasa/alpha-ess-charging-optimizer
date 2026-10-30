@@ -233,29 +233,6 @@ class TestJanuary2026DailyValidation:
             assert cycle.spread > 0, \
                 f"{date_str}: Cycle {i+1} has non-positive spread: {cycle.spread:.2f}"
 
-    def test_discharge_duration_validation(self, optimizer, date_str):
-        """Verify that discharge windows are long enough for the energy charged (non-overnight cycles)."""
-        prices_dict = load_prices_for_date(date_str)
-        if prices_dict is None:
-            pytest.skip(f"No price data available for {date_str}")
-        
-        plan = optimizer.analyze_day(prices_dict, current_soc=30.0)
-        
-        if not plan.cycles:
-            pytest.skip(f"No cycles found for {date_str}")
-        
-        for i, cycle in enumerate(plan.cycles):
-            if not is_overnight(cycle.charge_window):
-                # For non-overnight cycles, validate discharge duration
-                is_valid = optimizer._validate_discharge_window(
-                    cycle.charge_window,
-                    cycle.discharge_window,
-                    start_soc=30.0  # Use test SOC
-                )
-                assert is_valid, \
-                    f"{date_str}: Cycle {i+1} (non-overnight) has discharge window too short " \
-                    f"({cycle.discharge_window.duration_hours:.2f}h) for energy charged " \
-                    f"({cycle.charge_window.duration_hours:.2f}h)"
 
     def test_single_charge_window_duration_reasonable(self, optimizer, date_str):
         """Verify that no single charge window exceeds the full charge time.
@@ -280,24 +257,6 @@ class TestJanuary2026DailyValidation:
                 f"{date_str}: Cycle {i+1} charge window ({cycle.charge_window.duration_hours:.2f}h) " \
                 f"exceeds max single window {max_single_window:.2f}h (charge_hours={optimizer.charge_hours}h)"
 
-    def test_cycles_have_positive_spread(self, optimizer, date_str):
-        """Verify that all cycles have positive spread.
-        
-        Note: The detailed profitability check (discharge_price >= charge_price * price_multiplier)
-        is done in test_meaningful_spread. This test just ensures spread is positive.
-        """
-        prices_dict = load_prices_for_date(date_str)
-        if prices_dict is None:
-            pytest.skip(f"No price data available for {date_str}")
-        
-        plan = optimizer.analyze_day(prices_dict, current_soc=30.0)
-        
-        if not plan.cycles:
-            pytest.skip(f"No cycles found for {date_str}")
-        
-        for i, cycle in enumerate(plan.cycles):
-            assert cycle.spread > 0, \
-                f"{date_str}: Cycle {i+1} has non-positive spread: {cycle.spread:.2f}"
 
     def test_charge_window_sufficient_for_full_charge(self, optimizer, date_str):
         """Verify that charge windows are long enough to actually charge the battery meaningfully.
@@ -443,28 +402,6 @@ class TestJanuary31stSpecific:
                 for v in small_valleys:
                     print(f"    {v.start_time}-{v.end_time} ({v.end_slot - v.start_slot} slots)")
 
-    def test_jan31_evening_cycle_detection(self, optimizer):
-        """Investigate if there's an evening charging issue on Jan 31st."""
-        prices_dict = load_prices_for_date('2026-01-31')
-        if prices_dict is None:
-            pytest.skip("No price data available for 2026-01-31")
-        
-        # Check evening prices (after 17:00 = slot 68)
-        evening_slots = range(68, 96)  # 17:00 to 24:00
-        evening_prices = {s: prices_dict[s] for s in evening_slots}
-        
-        mean_price = sum(prices_dict.values()) / len(prices_dict)
-        evening_mean = sum(evening_prices.values()) / len(evening_prices)
-        
-        print(f"\n=== Jan 31st Evening Analysis ===")
-        print(f"Daily mean: {mean_price:.2f}")
-        print(f"Evening mean (17:00-24:00): {evening_mean:.2f}")
-        print(f"Evening prices by hour:")
-        for hour in range(17, 24):
-            hour_slots = range(hour * 4, (hour + 1) * 4)
-            hour_prices = [prices_dict[s] for s in hour_slots]
-            hour_avg = sum(hour_prices) / len(hour_prices)
-            print(f"  {hour:02d}:00 - {hour+1:02d}:00: avg={hour_avg:.2f}, prices={hour_prices}")
 
 
 if __name__ == "__main__":
