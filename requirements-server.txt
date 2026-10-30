@@ -6,7 +6,7 @@ aiofiles==25.1.0
     #   quart
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.5
+aiohttp==3.14.5
     # via
     #   alphaess-charging-optimizer
     #   emhass
@@ -323,6 +323,7 @@ tqdm==4.70.1
     #   skforecast
 typing-extensions==4.16.0
     # via
+    #   aiohttp
     #   aiosignal
     #   alembic
     #   anyio
@@ -363,5 +364,5 @@ werkzeug==3.1.9
     #   quart
 wsproto==1.3.2
     # via hypercorn
-yarl==1.23.0
+yarl==1.25.1
     # via aiohttp
