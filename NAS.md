@@ -59,6 +59,8 @@ Start Docker on the development computer, then:
 
 There is no password prompt. The command runs tests, builds Linux ARM64, smoke-tests the image without credentials/network access, streams it through SSH, backs up SQLite and recreates the container. A successful update requires a fresh controller cycle and cloud contact while preserving ON/OFF intent. A failed check restores the prior image and checks it again. If the prior controller is also unhealthy, the command reports failure; rollback is not proof of health.
 
+The dashboard footer shows the image revision (with `-dirty` for local source changes) and the last verified deployment time in Prague time. The updater records that time only after the new controller passes its health check. Older images or deployments without matching metadata show the time as unavailable. After updating `ops/nas/update.py`, deliberately reinstall the privileged helper with `./scripts/deploy-nas.sh --setup` before the next deployment so it can record this metadata.
+
 A Git push does not deploy automatically. Pull reviewed changes before deploying a newer release. To specify the connection explicitly:
 
 ```bash

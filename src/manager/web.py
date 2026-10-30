@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, StrictBool
 
+from .release import release_info
 from .controller import Controller
 from .energy_day import dashboard_daily_totals, dashboard_energy
 from .soc_tracking import dashboard_soc
@@ -321,6 +322,7 @@ def create_app(
         price_rows = dashboard_prices(store, settings, now)
         return {
             "now": now.isoformat(),
+            "release": release_info(settings.database_path),
             "price_intervals": price_rows,
             "plan_insights": explain_plan(plan, price_rows),
             "control": controller.control(),

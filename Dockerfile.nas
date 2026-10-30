@@ -4,6 +4,8 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
     MPLCONFIGDIR=/tmp/matplotlib XDG_CACHE_HOME=/tmp/cache
+ARG APP_VERSION=development
+ENV APP_VERSION=$APP_VERSION
 WORKDIR /app
 COPY requirements-server.txt ./
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libstdc++6 \

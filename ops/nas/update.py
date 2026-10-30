@@ -119,6 +119,13 @@ def apply_archive(archive, sha256, image_id):
             target.chmod(0o600)
             result = update(APP, copied, image_id)
             result['checked_at'] = datetime.now(timezone.utc).isoformat()
+            version = run([DOCKER, 'exec', 'alphaess-household', 'python', '-c',
+                           "import os; print(os.environ.get('APP_VERSION', 'development'))"]).strip()
+            marker = APP / 'data/deployment.json'
+            temporary = marker.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'version': version, 'deployed_at': result['checked_at']}) + '\n')
+            temporary.chmod(0o644)
+            temporary.replace(marker)
             (APP / 'last-update.json').write_text(json.dumps(result, indent=2) + '\n')
             print(json.dumps(result))
 

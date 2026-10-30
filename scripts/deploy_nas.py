@@ -144,7 +144,10 @@ def main():
     except (OSError, ValueError):
         pass
     run([sys.executable, '-m', 'pytest', 'tests/', '-q'])
-    run(['docker', 'build', '--platform', 'linux/arm64', '-f', 'Dockerfile.nas', '-t', IMAGE, '.'])
+    revision = run(['git', 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    if run(['git', 'status', '--porcelain', '--untracked-files=normal'], capture_output=True, text=True).stdout.strip():
+        revision += '-dirty'
+    run(['docker', 'build', '--build-arg', 'APP_VERSION=' + revision, '--platform', 'linux/arm64', '-f', 'Dockerfile.nas', '-t', IMAGE, '.'])
     check_image()
     destination = ROOT / 'dist/nas'
     destination.mkdir(parents=True, exist_ok=True)
