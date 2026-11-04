@@ -9,7 +9,7 @@ import {
 import { tomorrowAvailable, type DayView, type PriceBasis } from './lib/series'
 import { fmt, local } from './lib/time'
 import { Segmented } from './components/bits'
-import { AndonBanner, DaySummary, Header, KpiStrip, NowPanel, PlanWindows, SystemPanel } from './components/Panels'
+import { AndonBanner, DaySummary, Header, SavingsPanel, KpiStrip, NowPanel, PlanWindows, SystemPanel } from './components/Panels'
 import { Timeline } from './components/Timeline'
 
 const TONE_COLOR: Record<Tone, string> = { good: '#24a148', wait: '#f1c21b', attention: '#da1e28', off: '#8d8d8d' }
@@ -97,6 +97,7 @@ export default function App() {
               <aside className="side">
                 <NowPanel s={s} plan={derived.plan} acceptance={derived.acceptance} />
                 <DaySummary s={s} basis={basis} view={view} />
+                <SavingsPanel s={s} />
               </aside>
             </div>
 

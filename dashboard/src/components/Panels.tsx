@@ -40,6 +40,11 @@ export function Header({ s, connection, simulated, busy, onToggle }: {
         </div>
       </div>
       <div className="topbar-right">
+        {s?.savings && (
+          <div className="saved-pill" id="savedTotal" title={'Measured savings against the same demand and solar without a battery, since ' + sinceLabel(s.savings.since)}>
+            <span>Saved</span><b>{euro(s.savings.total_eur)}</b><span>since {sinceLabel(s.savings.since)}</span>
+          </div>
+        )}
         <div className="link-pill" id="connection" role="status" title={connection?.detail}>
           <Beacon tone={s ? linkTone : 'wait'} size={8} />
           <span>{!s ? 'Connecting…' : connection?.connected ? (simulated ? 'Simulated ESS' : 'ESS connected') : connection?.status}</span>
@@ -247,6 +252,46 @@ const fmtWindow = (a: number, b: number) => {
 }
 
 /* ───────────────────────── Price summary ───────────────────────── */
+
+/* ───────────────────────── Savings ───────────────────────── */
+
+export const euro = (v: number | null | undefined) =>
+  typeof v === 'number' && Number.isFinite(v) ? (v < 0 ? '−' : '') + '€' + Math.abs(v).toFixed(2) : '—'
+
+export const sinceLabel = (day?: string) =>
+  day ? new Date(day + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'
+
+function SavedValue({ value }: { value: number | null | undefined }) {
+  const ok = typeof value === 'number' && Number.isFinite(value)
+  return (
+    <strong className={ok ? (value! < 0 ? 'bad' : 'good') : undefined}>
+      {ok && value! < 0 ? '−€' : '€'}<CountUp value={ok ? Math.abs(value!) : null} digits={2} />
+    </strong>
+  )
+}
+
+export function SavingsPanel({ s }: { s: DashboardState }) {
+  const v = s.savings
+  const partial = (d?: { quarters: number } | null) => (d && d.quarters < 92 ? d.quarters + ' of 96 quarters measured' : null)
+  return (
+    <SpotlightCard className="panel savings-panel" as="article" aria-labelledby="savTitle">
+      <div className="panel-head"><h2 id="savTitle">Battery savings</h2><span className="muted small">vs. no battery</span></div>
+      {v ? (
+        <>
+          <div className="stat-trio" id="savings">
+            <div><span>Yesterday</span><SavedValue value={v.yesterday?.saved_eur} /><em>{v.yesterday ? partial(v.yesterday) ?? 'full day' : 'not counted'}</em></div>
+            <div><span>Today so far</span><SavedValue value={v.today?.saved_eur} /><em>{v.today ? v.today.quarters + ' quarters' : '—'}</em></div>
+            <div><span>Total</span><SavedValue value={v.total_eur} /><em>since {sinceLabel(v.since)}</em></div>
+          </div>
+          <p className="muted small savings-note">
+            Measured grid cost against the same house demand and solar with no battery, at your billed import and export prices.
+            Battery losses count; standing charges are excluded.
+          </p>
+        </>
+      ) : <p className="muted small">Counting starts with the first measured quarter hour.</p>}
+    </SpotlightCard>
+  )
+}
 
 export function DaySummary({ s, basis, view }: { s: DashboardState; basis: PriceBasis; view: DayView }) {
   const stats = priceStats(s, basis)

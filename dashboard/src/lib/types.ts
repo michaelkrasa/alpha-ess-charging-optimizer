@@ -73,6 +73,14 @@ export interface Replay {
   notes?: string[]
 }
 
+export interface SavingsDay {
+  saved_eur: number
+  cost_eur: number
+  cost_without_battery_eur: number
+  quarters: number
+  final?: boolean
+}
+
 export interface SocRow {
   timestamp: string
   expected_soc: number | null
@@ -100,6 +108,13 @@ export interface DashboardState {
     checked_at?: string
     solar_generated_kwh?: number
     battery_charged_kwh?: number
+  } | null
+  savings?: {
+    since?: string
+    total_eur: number
+    days_counted: number
+    today?: SavingsDay | null
+    yesterday?: SavingsDay | null
   } | null
   soc_tracking?: {
     actual?: { timestamp: string; actual_soc: number }[]

@@ -66,7 +66,17 @@ def sample_state():
                      for i, r in enumerate(actual)]
     future_expected = [{'timestamp': stamp(datetime.fromisoformat(r['timestamp']) + timedelta(minutes=15)),
                         'expected_soc': r['soc_percent'], 'actual_soc': None, 'delta_pp': None, 'issued_at': stamp(now)} for r in future]
-    return {'now': stamp(now), 'daily_energy': {'day': now.astimezone(ZoneInfo('Europe/Prague')).date().isoformat(), 'checked_at': stamp(now), 'solar_generated_kwh': sum(r['solar_kw'] * .25 for r in measurements), 'battery_charged_kwh': sum(max(0, -r['battery_kw']) * .25 for r in measurements)}, 'soc_tracking': {'actual': actual, 'rows': past_expected + future_expected,
+    cost = lambda kw, r: kw * (r['import_eur_kwh'] if kw > 0 else r['export_eur_kwh']) / 4
+    priced = {r['timestamp']: r for r in prices}
+    today = [(cost(m['load_kw'] - m['solar_kw'], priced[m['timestamp']]), cost(m['grid_kw'], priced[m['timestamp']]))
+             for m in measurements if datetime.fromisoformat(m['timestamp']) + timedelta(minutes=15) <= now]
+    saved_today = {'saved_eur': sum(w - a for w, a in today), 'cost_eur': sum(a for _, a in today),
+                   'cost_without_battery_eur': sum(w for w, _ in today), 'quarters': len(today), 'final': False}
+    yesterday = {'saved_eur': 1.87, 'cost_eur': 2.41, 'cost_without_battery_eur': 4.28, 'quarters': 96, 'final': True}
+    savings = {'since': (now - timedelta(days=12)).astimezone(ZoneInfo('Europe/Prague')).date().isoformat(),
+               'total_eur': round(19.63 + yesterday['saved_eur'] + saved_today['saved_eur'], 2), 'days_counted': 13,
+               'today': saved_today, 'yesterday': yesterday}
+    return {'now': stamp(now), 'savings': savings, 'daily_energy': {'day': now.astimezone(ZoneInfo('Europe/Prague')).date().isoformat(), 'checked_at': stamp(now), 'solar_generated_kwh': sum(r['solar_kw'] * .25 for r in measurements), 'battery_charged_kwh': sum(max(0, -r['battery_kw']) * .25 for r in measurements)}, 'soc_tracking': {'actual': actual, 'rows': past_expected + future_expected,
             'latest': past_expected[-1], 'mean_absolute_error_pp': 1.0}, 'price_intervals': prices,
             'control': {'enabled': True, 'revision': 1, 'restore_pending': False},
             'health': {'status': 'active', 'timestamp': stamp(now), 'message': 'Sample controller cycle completed.'},

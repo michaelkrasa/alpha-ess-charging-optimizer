@@ -48,6 +48,9 @@ def day_measurements(rows, now):
                 "load_kw": load,
                 "solar_kw": solar,
             }
+            grid = row.get("grid_kw")
+            if isinstance(grid, (int, float)) and math.isfinite(grid):
+                found[key]["grid_kw"] = float(grid)
             soc = row.get("soc_percent")
             if not isinstance(soc, (int, float)) or not math.isfinite(soc) or not 0 <= soc <= 100:
                 soc = previous_soc
@@ -77,8 +80,11 @@ def record_measurement(store, telemetry, now):
     )
 
 
-def cache_power_history(store, samples, now):
-    """Backfill measured samples since midnight; cloud powers are watts."""
+def parse_power_history(samples):
+    """Cloud day-history samples (watts) as measurement rows in kW.
+
+    Grid is import minus export, so battery flow is load - solar - grid.
+    """
     rows = []
     for sample in samples or []:
         try:
@@ -87,16 +93,25 @@ def cache_power_history(store, samples, now):
             )
             if stamp.tzinfo is None:
                 stamp = stamp.replace(tzinfo=PRAGUE)
-            rows.append(
-                {
-                    "timestamp": stamp.isoformat(),
-                    "load_kw": float(sample["load"]) / 1000,
-                    "solar_kw": float(sample["ppv"]) / 1000,
-                    "soc_percent": float(sample["cbat"]) if sample.get("cbat") is not None else None,
-                }
-            )
+            row = {
+                "timestamp": stamp.isoformat(),
+                "load_kw": float(sample["load"]) / 1000,
+                "solar_kw": float(sample["ppv"]) / 1000,
+                "soc_percent": float(sample["cbat"]) if sample.get("cbat") is not None else None,
+            }
         except (ValueError, KeyError, TypeError):
             continue
+        try:
+            row["grid_kw"] = (float(sample["gridCharge"]) - float(sample["feedIn"])) / 1000
+        except (ValueError, KeyError, TypeError):
+            pass
+        rows.append(row)
+    return rows
+
+
+def cache_power_history(store, samples, now):
+    """Backfill measured samples since midnight; cloud powers are watts."""
+    rows = parse_power_history(samples)
     day = str(now.astimezone(PRAGUE).date())
     cached = store.get("energy_day") or {}
     current = cached.get("rows", []) if cached.get("day") == day else []

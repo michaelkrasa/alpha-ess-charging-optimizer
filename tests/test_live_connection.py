@@ -147,3 +147,26 @@ async def test_api_spacing_is_shared_between_monitor_and_control_clients(
     assert await clients[0].call("getLastPowerData") == {"ok": True}
     assert await clients[1].call("getLastPowerData") == {"ok": True}
     assert waits == [10.0]
+
+
+async def test_monitor_finalizes_yesterday_savings_once_without_writes(monitor):
+    c, d, now = monitor
+    from src.manager.domain import PRAGUE, day_slots
+    yesterday = now.astimezone(PRAGUE).date() - timedelta(days=1)
+    c.store.put("eur_conversion", {"rate": 25.0, "published": str(yesterday)})
+    c.store.put(f"prices:{c.settings.price_source}:{yesterday}", [100.0] * len(day_slots(yesterday)))
+    asked = []
+
+    async def history(day):
+        asked.append(day)
+        return [{"uploadTime": t.isoformat(), "load": 2000, "ppv": 0, "cbat": 50, "gridCharge": 0, "feedIn": 0}
+                for t in day_slots(day)] if day == yesterday else []
+
+    d.power_history = history
+    await c.monitor_once()
+    entry = c.store.get("savings")["days"][str(yesterday)]
+    assert entry["final"] and entry["quarters"] == 96 and entry["saved_eur"] > 0
+    c.store.put("device_connection", {"checked_at": (now - timedelta(minutes=2)).isoformat()})
+    await c.monitor_once()
+    assert asked.count(yesterday) == 1
+    assert c.store.get("actuation") is None

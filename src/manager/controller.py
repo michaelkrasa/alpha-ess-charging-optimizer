@@ -14,7 +14,8 @@ from .tariff import schedule_verified
 from .store import BusyError
 from .daily import plan_daily
 from .legacy_device import LegacyDevice
-from .energy_day import cache_daily_totals, cache_power_history, record_measurement
+from .energy_day import cache_daily_totals, cache_power_history, parse_power_history, record_measurement
+from .savings import needs_final, record_day
 from .soc_tracking import capture_forecast
 from .charge_policy import (
     archive_forecasts,
@@ -295,6 +296,31 @@ class Controller:
                 )
             raise
 
+    async def record_savings(self, owner, device):
+        """Read-only bookkeeping: today's running savings and yesterday's final total."""
+        now = utc_now()
+        try:
+            cached = self.store.get("energy_day") or {}
+            today = now.astimezone(PRAGUE).date()
+            if cached.get("day") == str(today) and self.store.is_owner(owner):
+                record_day(self.store, self.settings, today, cached.get("rows", []), now)
+            yesterday = needs_final(self.store, now)
+            tried = self.store.get("savings_final_attempt") or {}
+            recent = tried.get("day") == str(yesterday) and (
+                now - datetime.fromisoformat(tried["at"])
+            ).total_seconds() < 1800
+            if (
+                yesterday is not None
+                and not recent
+                and self.store.get(f"prices:{self.settings.price_source}:{yesterday}")
+            ):
+                self.store.put("savings_final_attempt", {"day": str(yesterday), "at": now.isoformat()})
+                samples = await device.power_history(yesterday)
+                if self.store.is_owner(owner):
+                    record_day(self.store, self.settings, yesterday, parse_power_history(samples), now, final=True)
+        except (DeviceUnavailable, ValueError, KeyError, TypeError):
+            pass  # Savings are informational and must not interrupt monitoring.
+
     async def monitor_once(self):
         """Never write settings or replan; share the writer's execution lease."""
         if not self.live:
@@ -343,6 +369,7 @@ class Controller:
                         )
                 except DeviceUnavailable:
                     pass  # Keep available measurements if day-history retrieval fails.
+            await self.record_savings(owner, device)
             totals = self.store.get("daily_energy") or {}
             checked = totals.get("checked_at")
             if hasattr(device, "daily_energy") and (

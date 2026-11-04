@@ -20,6 +20,7 @@ from .release import release_info
 from .controller import Controller
 from .energy_day import dashboard_daily_totals, dashboard_energy
 from .soc_tracking import dashboard_soc
+from .savings import billed_prices, dashboard_savings
 from .plan_insight import explain_plan
 from .domain import PRAGUE, UTC, day_slots, utc_now
 from .settings import load_settings
@@ -28,48 +29,13 @@ from .tariff import high_tariff, prices, schedule_verified
 
 
 def dashboard_prices(store, settings, now):
-    """Show complete cached market days, independently of the future-only plan.
-
-    Dashboard reads perform no market/API requests. Billed prices use the same
-    tariff function and bounded-age FX cache as planning; missing inputs remain
-    unknown rather than manufacturing a billed price.
-    """
+    """Show complete cached market days, independently of the future-only plan."""
     today = now.astimezone(PRAGUE).date()
-    fx = store.get("eur_conversion") or {}
-    rate = fx.get("rate")
-    try:
-        valid_fx = (
-            rate is not None
-            and math.isfinite(rate)
-            and 10 < rate < 100
-            and 0 <= (today - date.fromisoformat(fx["published"])).days <= 7
-        )
-    except (KeyError, ValueError, TypeError):
-        valid_fx = False
-    result = []
-    for day in (today, today + timedelta(days=1)):
-        values = store.get(f"prices:{settings.price_source}:{day}")
-        instants = day_slots(day)
-        if values is None or len(values) != len(instants):
-            continue
-        if any(not isinstance(p, (int, float)) or not math.isfinite(p) for p in values):
-            continue
-        for t, spot in zip(instants, values):
-            verified = schedule_verified(t, settings)
-            high = high_tariff(t, settings.high_tariff_periods) if verified else True
-            buy, sell = prices(spot, rate, high) if valid_fx else (None, None)
-            result.append(
-                {
-                    "timestamp": t.isoformat(),
-                    "spot_eur_mwh": spot,
-                    "import_eur_kwh": buy,
-                    "export_eur_kwh": sell,
-                    "tariff": "VT" if high else "NT",
-                    "tariff_verified": verified,
-                    "elapsed": t + timedelta(minutes=15) <= now,
-                }
-            )
-    return result
+    return [
+        row
+        for day in (today, today + timedelta(days=1))
+        for row in billed_prices(store, settings, day, now)
+    ]
 
 
 CONTROL_CHECK_SECONDS = 300
@@ -331,6 +297,7 @@ def create_app(
             "device_connection": store.get("device_connection"),
             "energy_day": energy,
             "daily_energy": dashboard_daily_totals(store, now),
+            "savings": dashboard_savings(store, now),
             "soc_tracking": dashboard_soc(store, now, energy),
             "charge_policy": (store.get("plan") or {}).get("charge_policy"),
             "full_charge": store.get("full_charge"),
