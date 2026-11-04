@@ -4,11 +4,15 @@ import { actionLabel } from '../lib/schedule'
 import { clock, finite, fmt } from '../lib/time'
 
 const CARD_W = 312
+/** Below this chart width the card would cover the chart, so it docks underneath. */
+export const DOCK_BELOW = 560
+const touch = () => typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches
 
 /** Large, high-contrast numbers for the hovered quarter hour. */
 export function Readout({ detail: d, basis, dayText, left, top, width, pinned }: {
   detail: Inspection; basis: PriceBasis; dayText: string; left: number; top: number; width: number; pinned: boolean
 }) {
+  const docked = width < DOCK_BELOW
   const flip = left + 22 + CARD_W > width
   const x = flip ? Math.max(8, left - 22 - CARD_W) : left + 22
   const y = Math.max(8, Math.min(top - 40, 150))
@@ -19,14 +23,14 @@ export function Readout({ detail: d, basis, dayText, left, top, width, pinned }:
   return (
     <motion.div
       id="tooltip"
-      className="readout"
+      className={'readout' + (docked ? ' docked' : '')}
       role="status"
       aria-live="polite"
       initial={{ opacity: 0, scale: 0.96, y: 4 }}
-      animate={{ opacity: 1, scale: 1, y: 0, left: x, top: y }}
+      animate={docked ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1, scale: 1, y: 0, left: x, top: y }}
       exit={{ opacity: 0, scale: 0.97, transition: { duration: 0.12 } }}
       transition={{ type: 'spring', stiffness: 600, damping: 42, mass: 0.6 }}
-      style={{ width: CARD_W }}
+      style={docked ? undefined : { width: CARD_W }}
     >
       <header>
         <div>
@@ -94,7 +98,8 @@ export function Readout({ detail: d, basis, dayText, left, top, width, pinned }:
             ? <div className="readout-sub">From inverter settings</div>
             : d.scheduleSource === 'plan' && !d.inverterConfirmed ? <div className="readout-sub">Inverter settings not yet confirmed</div> : null}
       </section>
-      <footer>{pinned ? 'Pinned · click again or Esc to release · ← → to step' : 'Click to pin · ← → to step'}</footer>
+      <footer>{touch() ? 'Tap another quarter hour · tap it again to close'
+        : pinned ? 'Pinned · click again or Esc to release · ← → to step' : 'Click to pin · ← → to step'}</footer>
     </motion.div>
   )
 }

@@ -66,7 +66,7 @@ export default function App() {
                 <div className="panel-head timeline-head">
                   <div>
                     <h2 id="tlTitle">{derived.historical ? 'Replay · ' + s.replay!.day : 'Outlook'}</h2>
-                    <p className="muted small">Price, battery and solar with the battery schedule · hover or click any quarter hour</p>
+                    <p className="muted small">Price, battery and solar with the battery schedule · hover or tap any quarter hour</p>
                   </div>
                   <div className="toolbar">
                     <Segmented id="basis" label="Price basis" value={basis} onChange={setBasis}

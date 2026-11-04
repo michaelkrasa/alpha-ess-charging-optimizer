@@ -42,7 +42,7 @@ export function Header({ s, connection, simulated, busy, onToggle }: {
       <div className="topbar-right">
         {s?.savings && (
           <div className="saved-pill" id="savedTotal" title={'Measured savings against the same demand and solar without a battery, since ' + sinceLabel(s.savings.since)}>
-            <span>Saved</span><b>{euro(s.savings.total_eur)}</b><span>since {sinceLabel(s.savings.since)}</span>
+            <span>Saved</span><b>{euro(s.savings.total_eur)}</b><span className="saved-since">since {sinceLabel(s.savings.since)}</span>
           </div>
         )}
         <div className="link-pill" id="connection" role="status" title={connection?.detail}>
