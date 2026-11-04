@@ -152,3 +152,59 @@ async def test_second_write_failure_preserves_safe_intermediate(tmp_path, charge
         actual_c["timeChaf1"] < actual_d["timeDise1"]
         and actual_d["timeDisf1"] < actual_c["timeChae1"]
     )
+
+
+async def test_native_restoration_clears_unsupported_stored_periods(tmp_path):
+    device = Device(tmp_path)
+    device.current_charge = charge("23:00", "00:00")
+    device.current_discharge = discharge("22:00", "06:00")
+    result = await device.native(10, True)
+    assert result["schedule_verified"]
+    assert device.current_charge == charge("00:00", "00:00", enabled=0)
+    assert device.current_discharge == discharge("00:00", "00:00", enabled=0)
+
+
+@pytest.mark.parametrize("kind", ["charge", "discharge", "both"])
+async def test_new_plan_recovers_from_unsupported_stored_periods(tmp_path, monkeypatch, kind):
+    from datetime import timedelta
+
+    device = Device(tmp_path)
+    if kind in ("charge", "both"):
+        device.current_charge = charge("23:00", "00:00")
+    if kind in ("discharge", "both"):
+        device.current_discharge = discharge("22:00", "06:00")
+    clock = [utc_now()]
+    original_call = device.call
+
+    async def spaced_call(*args, **kwargs):
+        result = await original_call(*args, **kwargs)
+        clock[0] += timedelta(seconds=10)
+        return result
+
+    device.call = spaced_call
+    monkeypatch.setattr("src.manager.legacy_device.utc_now", lambda: clock[0])
+    result = await device.replace(charge("10:00", "12:00"), discharge())
+    assert result["schedule_verified"]
+    assert device.current_charge == charge("10:00", "12:00")
+    assert device.current_discharge == discharge()
+
+
+async def test_recovery_failure_leaves_unsupported_charge_disabled(tmp_path):
+    device = Device(tmp_path)
+    device.current_charge = charge("23:00", "00:00")
+    device.current_discharge = discharge("22:00", "06:00")
+    device.fail_second = True
+    with pytest.raises(DeviceUnavailable, match="unconfirmed"):
+        await device.replace(charge("10:00", "12:00"), discharge())
+    assert device.current_charge == charge("00:00", "00:00", enabled=0)
+    assert device.store.get("device_schedule")["readback_pending"]
+
+
+@pytest.mark.parametrize("kind", ["charge", "discharge"])
+async def test_recovery_still_rejects_new_midnight_crossing_windows(tmp_path, kind):
+    device = Device(tmp_path)
+    c = charge("23:00", "00:00") if kind == "charge" else charge()
+    d = discharge("22:00", "06:00") if kind == "discharge" else discharge()
+    with pytest.raises(DeviceUnavailable, match="Invalid daily charge period"):
+        await device.replace(c, d)
+    assert not device.writes

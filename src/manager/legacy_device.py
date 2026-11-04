@@ -29,6 +29,16 @@ DISCHARGE_FIELDS = (
 )
 
 
+def disabled_settings(payload, kind):
+    """Clear stored periods when disabling, even if their format is unsupported."""
+    fields = CHARGE_FIELDS if kind == "charge" else DISCHARGE_FIELDS
+    return {
+        fields[0]: 0,
+        fields[1]: payload[fields[1]],
+        **{field: "00:00" for field in fields[2:]},
+    }
+
+
 class LegacyDevice(AlphaDevice):
     minimum_write_interval_seconds = 10
 
@@ -205,8 +215,14 @@ class LegacyDevice(AlphaDevice):
             # particular, OFF must be able to clear an overlapping old pair.
             if not c["gridCharge"] or not d["ctrDis"]:
                 return True
-            charge_periods = self.validate_settings(c, "charge")
-            discharge_periods = self.validate_settings(d, "discharge")
+            try:
+                charge_periods = self.validate_settings(c, "charge")
+                discharge_periods = self.validate_settings(d, "discharge")
+            except DeviceUnavailable:
+                # Existing app/device windows can cross midnight. Their
+                # compatibility with a new pair is unknown; stage a stop
+                # rather than blocking recovery or relaxing new-plan checks.
+                return False
             return not any(
                 a < y and x < b for a, b in charge_periods for x, y in discharge_periods
             )
@@ -221,8 +237,7 @@ class LegacyDevice(AlphaDevice):
                 # With repeatable writes, a window swap can be staged safely:
                 # stop grid charge, replace discharge, then install new charge.
                 # A failure leaves charging disabled rather than overlapping.
-                stopped = {k: current_charge[k] for k in CHARGE_FIELDS}
-                stopped["gridCharge"] = 0
+                stopped = disabled_settings(current_charge, "charge")
                 changes = [
                     ("charge", stopped, current_charge),
                     ("discharge", discharge, current_discharge),
@@ -282,10 +297,8 @@ class LegacyDevice(AlphaDevice):
             )
         charge, native = await self.read_config()
         self.require_daily_baseline(native, reserve)
-        payload = {k: charge[k] for k in CHARGE_FIELDS}
-        payload["gridCharge"] = 0
-        discharge = {k: native.get(k, "00:00") for k in DISCHARGE_FIELDS}
-        discharge.update(ctrDis=0, batUseCap=reserve)
+        payload = disabled_settings(charge, "charge")
+        discharge = disabled_settings(native, "discharge")
         return await self.replace_pair(payload, discharge, charge, native, guard)
 
     async def apply_daily(self, plan, settings, now, guard=lambda: True):
