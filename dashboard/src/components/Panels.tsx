@@ -24,68 +24,65 @@ function LiveClock() {
   return <span className="live-clock">{clockSeconds(now)}</span>
 }
 
-export function Header({ s, connection, simulated, busy, onToggle }: {
+const TONE_WORD: Record<Tone, string> = { good: 'OK', wait: 'WATCH', attention: 'ACT', off: 'IDLE' }
+
+/**
+ * One compact command bar: identity and clock, the andon state (lamp, headline,
+ * detail, further issues), savings, the ESS link and the automatic-control switch.
+ */
+export function Header({ s, connection, simulated, busy, onToggle, board, issues = [], connectionError = '', commandError = '', onDetails }: {
   s: DashboardState | null; connection: Connection | null; simulated: boolean; busy: boolean; onToggle: () => void
+  board?: Andon | null; issues?: string[]; connectionError?: string; commandError?: string; onDetails?: () => void
 }) {
   const on = !!s?.control.enabled
-  const date = s ? new Date(s.now).toLocaleDateString('en-GB', { timeZone: ZONE, weekday: 'long', day: 'numeric', month: 'long' }) : '—'
+  const date = s ? new Date(s.now).toLocaleDateString('en-GB', { timeZone: ZONE, weekday: 'short', day: 'numeric', month: 'short' }) : '—'
   const linkTone: Tone = connection?.connected ? 'good' : 'attention'
+  const tone: Tone = connectionError || commandError ? 'attention' : board?.tone ?? 'wait'
+  const headline = connectionError ? 'Dashboard disconnected' : board?.headline ?? 'Connecting…'
+  const detail = connectionError || commandError || board?.detail || ''
   return (
-    <header className="topbar">
-      <div className="brand">
+    <header className="command-bar">
+      <div className="cb-brand">
         <LogoMark />
         <div>
           <div className="brand-name">Household Energy</div>
           <div className="brand-sub">{date} · <LiveClock /> Prague</div>
         </div>
       </div>
-      <div className="topbar-right">
+
+      <motion.section className="cb-status" data-tone={tone} layout aria-label="Overall system state">
+        <span className="cb-lamp"><Beacon tone={tone} size={10} /><b>{TONE_WORD[tone]}</b></span>
+        <div className="cb-copy">
+          <motion.h1 key={headline} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
+            {headline}
+          </motion.h1>
+          <p id="notice" role="alert" title={detail}>{detail}</p>
+          {issues.length > 1 && <ul className="cb-issues">{issues.slice(1).map(x => <li key={x}>{x}</li>)}</ul>}
+        </div>
+        {onDetails && <button type="button" className="cb-link" onClick={onDetails}>Details →</button>}
+      </motion.section>
+
+      <div className="cb-meta">
         {s?.savings && (
-          <div className="saved-pill" id="savedTotal" title={'Measured savings against the same demand and solar without a battery, since ' + sinceLabel(s.savings.since)}>
-            <span>Saved</span><b>{euro(s.savings.total_eur)}</b><span className="saved-since">since {sinceLabel(s.savings.since)}</span>
+          <div className="cb-stat" id="savedTotal" title="Measured savings against the same demand and solar without a battery">
+            <b className="saved">{euro(s.savings.total_eur)}</b>
+            <span>saved since {sinceLabel(s.savings.since)}</span>
           </div>
         )}
-        <div className="link-pill" id="connection" role="status" title={connection?.detail}>
-          <Beacon tone={s ? linkTone : 'wait'} size={8} />
-          <span>{!s ? 'Connecting…' : connection?.connected ? (simulated ? 'Simulated ESS' : 'ESS connected') : connection?.status}</span>
+        <div className="cb-stat" id="connection" role="status" title={connection?.detail}>
+          <b><Beacon tone={s ? linkTone : 'wait'} size={8} />{!s ? 'Connecting…' : connection?.connected ? (simulated ? 'Simulated ESS' : 'ESS connected') : connection?.status}</b>
+          <span>{connection?.connected ? 'live link' : 'link'}</span>
         </div>
-        <div className="auto-tile" data-on={on}>
-          <div>
-            <div className="auto-title">Automatic control</div>
-            <div className="auto-sub" id="controlDescription">{!s ? 'Checking…' : on ? (s.control_check_minutes ? 'Checks every ' + s.control_check_minutes + ' min' : 'Active') : 'Monitoring only'}</div>
-          </div>
-          <Switch on={on} disabled={!s || busy} onToggle={onToggle} label="Automatic battery management" />
+      </div>
+
+      <div className="cb-auto" data-on={on}>
+        <div>
+          <div className="auto-title">Automatic control</div>
+          <div className="auto-sub" id="controlDescription">{!s ? 'Checking…' : on ? (s.control_check_minutes ? 'Checks every ' + s.control_check_minutes + ' min' : 'Active') : 'Monitoring only'}</div>
         </div>
+        <Switch on={on} disabled={!s || busy} onToggle={onToggle} label="Automatic battery management" />
       </div>
     </header>
-  )
-}
-
-/* ───────────────────────── Andon banner ───────────────────────── */
-
-const TONE_WORD: Record<Tone, string> = { good: 'OK', wait: 'WATCH', attention: 'ACT', off: 'IDLE' }
-
-export function AndonBanner({ board, issues, connectionError, commandError, onDetails }: {
-  board: Andon; issues: string[]; connectionError: string; commandError: string; onDetails: () => void
-}) {
-  const tone: Tone = connectionError || commandError ? 'attention' : board.tone
-  return (
-    <motion.section className="andon" data-tone={tone} layout aria-label="Overall system state">
-      <div className="andon-lamp">
-        <Beacon tone={tone} size={14} />
-        <span>{TONE_WORD[tone]}</span>
-      </div>
-      <div className="andon-copy">
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.h1 key={board.headline} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.25 }}>
-            {connectionError ? 'Dashboard disconnected' : board.headline}
-          </motion.h1>
-        </AnimatePresence>
-        <p id="notice" role="alert">{connectionError || commandError || board.detail}</p>
-        {issues.length > 1 && <ul className="andon-issues">{issues.slice(1).map(x => <li key={x}>{x}</li>)}</ul>}
-      </div>
-      <button type="button" className="ghost" onClick={onDetails}>System details →</button>
-    </motion.section>
   )
 }
 

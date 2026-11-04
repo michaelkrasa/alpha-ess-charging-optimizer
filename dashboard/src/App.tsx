@@ -9,7 +9,7 @@ import {
 import { tomorrowAvailable, type DayView, type PriceBasis } from './lib/series'
 import { fmt, local } from './lib/time'
 import { Segmented } from './components/bits'
-import { AndonBanner, DaySummary, Header, SavingsPanel, KpiStrip, NowPanel, PlanWindows, SystemPanel } from './components/Panels'
+import { DaySummary, Header, SavingsPanel, KpiStrip, NowPanel, PlanWindows, SystemPanel } from './components/Panels'
 import { Timeline } from './components/Timeline'
 
 const TONE_COLOR: Record<Tone, string> = { good: '#24a148', wait: '#f1c21b', attention: '#da1e28', off: '#8d8d8d' }
@@ -54,11 +54,11 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <main>
-        <Header s={s} connection={derived?.connection ?? null} simulated={simulated} busy={feed.busy} onToggle={() => s && feed.setEnabled(!s.control.enabled)} />
+        <Header s={s} connection={derived?.connection ?? null} simulated={simulated} busy={feed.busy} onToggle={() => s && feed.setEnabled(!s.control.enabled)}
+          board={derived?.board} issues={derived?.issues} connectionError={feed.connectionError} commandError={feed.commandError} onDetails={derived ? showDetails : undefined} />
 
         {s && derived ? (
           <>
-            <AndonBanner board={derived.board} issues={derived.issues} connectionError={feed.connectionError} commandError={feed.commandError} onDetails={showDetails} />
             <KpiStrip s={s} activity={derived.activity} basis={basis} />
 
             <div className="main-grid">
@@ -135,7 +135,6 @@ export default function App() {
 function Loading({ error }: { error: string }) {
   return (
     <div className="loading" role="status">
-      <div className="skeleton andon-skel" />
       <div className="kpis">{[0, 1, 2, 3, 4].map(i => <div key={i} className="skeleton kpi-skel" />)}</div>
       <div className="skeleton timeline-skel" />
       <p id="connectionError">{error || 'Connecting to the controller…'}</p>
