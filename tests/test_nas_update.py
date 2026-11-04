@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from ops.nas.update import update, wait_for_cycle
+from ops.nas.update import PROBE, PROBE_HTTP_SECONDS, update, wait_for_cycle
 
 
 class Runner:
@@ -39,6 +39,36 @@ def test_update_preserves_disabled_intent_and_uses_local_image_only(tmp_path):
     assert up[-2:] == ['--pull', 'never'] and '--force-recreate' in up
     assert '--no-build' in up
     assert any(c[-2:] == ['sha256:old', 'alphaess-household:rollback'] for c in runner.calls)
+
+
+def test_busy_controller_cycle_is_retried_before_any_change(tmp_path):
+    runner = Runner()
+    failures = [2]
+    def busy_then_ready(command, timeout=300):
+        if 'exec' in command and failures[0]:
+            failures[0] -= 1
+            raise RuntimeError('Command failed: docker')  # /api/state busy during a solve
+        return runner(command, timeout)
+    pauses = []
+    result = update(tmp_path, tmp_path/'image.gz', 'sha256:new', busy_then_ready,
+                    lambda *a, **k: {'health': 'active'}, pause=pauses.append)
+    assert result['status'] == 'updated'
+    assert pauses == [20, 20]
+
+
+def test_unanswered_probe_aborts_without_touching_the_container(tmp_path):
+    calls = []
+    def silent(command, timeout=300):
+        calls.append(command)
+        raise RuntimeError('Command failed: docker')
+    with pytest.raises(RuntimeError, match='no container changes made'):
+        update(tmp_path, tmp_path/'image.gz', 'sha256:new', silent, lambda *a, **k: {}, pause=lambda _: None)
+    assert calls and all('exec' in c for c in calls)
+
+
+def test_probe_outlasts_an_emhass_solve():
+    assert PROBE_HTTP_SECONDS >= 30
+    assert f'timeout={PROBE_HTTP_SECONDS})' in PROBE
 
 
 def test_bad_image_identity_restores_old_tag(tmp_path):

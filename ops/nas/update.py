@@ -16,8 +16,11 @@ import time
 
 APP = Path('/volume1/docker/alphaess-household')
 DOCKER = '/var/packages/ContainerManager/target/usr/bin/docker'
+# A controller cycle (EMHASS solve) can keep /api/state busy for ~15 s, so the
+# probe waits well beyond that; probe_before_update also retries.
+PROBE_HTTP_SECONDS = 30
 PROBE = """import json,urllib.request
-s=json.load(urllib.request.urlopen('http://127.0.0.1:8765/api/state',timeout=5))
+s=json.load(urllib.request.urlopen('http://127.0.0.1:8765/api/state',timeout=30))
 print(json.dumps({'enabled':s['control']['enabled'],'planner':s['standard_planner'],
 'live':s['live'],'health':(s.get('health') or {}).get('status'),
 'cycle':(s.get('health') or {}).get('timestamp'),
@@ -50,7 +53,23 @@ def compose(app):
 
 
 def probe(runner=run):
-    return json.loads(runner([DOCKER, 'exec', 'alphaess-household', 'python', '-c', PROBE], timeout=15))
+    return json.loads(runner([DOCKER, 'exec', 'alphaess-household', 'python', '-c', PROBE],
+                             timeout=PROBE_HTTP_SECONDS + 15))
+
+
+def probe_before_update(runner=run, pause=time.sleep, attempts=4):
+    """Read control intent before any change; retry if a controller cycle is busy.
+
+    Nothing has been modified yet, so retrying is safe. Persistent failure still
+    aborts without touching the running container.
+    """
+    for attempt in range(attempts):
+        try:
+            return probe(runner)
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired):
+            if attempt == attempts - 1:
+                raise RuntimeError('Running controller did not answer; no container changes made') from None
+            pause(20)
 
 
 def wait_for_cycle(since, enabled, live, runner=run, pause=time.sleep, attempts=60):
@@ -76,8 +95,8 @@ def container_started(runner):
     return datetime.fromisoformat(re.sub(r'(\.\d{6})\d+', r'\1', value).replace('Z', '+00:00'))
 
 
-def update(app, archive, expected_id, runner=run, verify=wait_for_cycle):
-    before = probe(runner)
+def update(app, archive, expected_id, runner=run, verify=wait_for_cycle, pause=time.sleep):
+    before = probe_before_update(runner, pause)
     old_id = runner([DOCKER, 'inspect', '--format', '{{.Image}}', 'alphaess-household']).strip()
     runner([DOCKER, 'tag', old_id, 'alphaess-household:rollback'])
     command = compose(app)
