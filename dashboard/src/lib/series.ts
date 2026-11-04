@@ -126,7 +126,7 @@ export interface Inspection {
   inverterConfirmed: boolean
   /** The single schedule shown in the outlook for this quarter. */
   scheduleAction: Action | null
-  scheduleSource: 'plan' | 'inverter' | null
+  scheduleSource: TrackSource | null
   elapsed: boolean
 }
 
@@ -141,6 +141,8 @@ export function inspect(s: DashboardState, plan: Decision[], observed: Telemetry
   const decision = plan.find(r => r.timestamp === row.timestamp) ?? null
   const confirmed = scheduleFresh(s.device_schedule, s.now)
   const inverterAction = s.device_schedule?.charge && s.device_schedule?.discharge ? configuredAction(s.device_schedule, minuteOfDay(t)) : null
+  const elapsed = t + QUARTER <= ms(s.now)
+  const measured = elapsed ? measuredAction(s, observed, t) : null
   return {
     start: t,
     end: t + QUARTER,
@@ -158,9 +160,9 @@ export function inspect(s: DashboardState, plan: Decision[], observed: Telemetry
     planAction: decision?.action ?? null,
     inverterAction,
     inverterConfirmed: confirmed,
-    scheduleAction: decision?.action ?? inverterAction,
-    scheduleSource: decision ? 'plan' : inverterAction ? 'inverter' : null,
-    elapsed: t + QUARTER <= ms(s.now),
+    scheduleAction: elapsed ? measured : decision?.action ?? inverterAction,
+    scheduleSource: elapsed ? (measured ? 'measured' : null) : decision ? 'plan' : inverterAction ? 'inverter' : null,
+    elapsed,
   }
 }
 
@@ -198,23 +200,50 @@ export function planWindows(plan: Decision[], keys: string[]): PlanWindow[] {
   return out
 }
 
-export interface TrackSegment { t0: number; t1: number; action: Action; source: 'plan' | 'inverter' }
+export type TrackSource = 'measured' | 'plan' | 'inverter'
+export interface TrackSegment { t0: number; t1: number; action: Action; source: TrackSource }
+
+/** Smallest SOC change per quarter that counts as battery activity (≈0.35 kW on 17 kWh). */
+const ACTIVITY_PP = 0.5
 
 /**
- * One schedule for the outlook: the plan where it exists, the inverter's
- * (daily-repeating) charge/discharge windows for the remaining quarters.
+ * What the battery actually did in an elapsed quarter, from the measured SOC at
+ * its two boundaries: charging (grid or solar, by measured solar power),
+ * supplying the house, or preserved. Null when either boundary is unmeasured.
  */
-export function scheduleTrack(s: DashboardState, plan: Decision[], start: number, end: number): TrackSegment[] {
+export function measuredAction(s: DashboardState, observed: Telemetry[], t: number): Action | null {
+  const soc = new Map((s.soc_tracking?.actual || []).map(r => [ms(r.timestamp), r.actual_soc]))
+  const a = soc.get(t), b = soc.get(t + QUARTER)
+  if (!finite(a) || !finite(b)) return null
+  const change = b - a
+  if (change <= -ACTIVITY_PP) return 'self_consume'
+  if (change < ACTIVITY_PP) return 'hold'
+  const capacity = s.telemetry?.capacity_kwh
+  const solar = observed.filter(r => { const u = ms(r.timestamp); return u >= t && u <= t + QUARTER && finite(r.solar_kw) })
+  const solarKw = solar.length ? solar.reduce((sum, r) => sum + r.solar_kw, 0) / solar.length : 0
+  const chargeKw = finite(capacity) && capacity > 0 ? (change / 100) * capacity * 4 : null
+  return chargeKw !== null ? (solarKw >= 0.7 * chargeKw ? 'solar' : 'charge') : solarKw >= 0.3 ? 'solar' : 'charge'
+}
+
+/**
+ * One schedule for the outlook. Elapsed quarters show what the battery
+ * measurably did; from the current quarter on, the plan where it exists and
+ * the inverter's (daily-repeating) windows elsewhere. Plan and inverter quarters
+ * with the same action form one segment.
+ */
+export function scheduleTrack(s: DashboardState, plan: Decision[], start: number, end: number, observed: Telemetry[] = []): TrackSegment[] {
   const byTime = new Map(plan.map(r => [ms(r.timestamp), r.action]))
   const device = s.device_schedule?.charge && s.device_schedule?.discharge ? s.device_schedule : null
+  const now = ms(s.now)
   const segments: TrackSegment[] = []
   for (let t = start; t < end; t += QUARTER) {
+    const elapsed = t + QUARTER <= now
     const planned = byTime.get(t)
-    const action = planned ?? (device ? configuredAction(device, minuteOfDay(t)) : null)
+    const action = elapsed ? measuredAction(s, observed, t) : planned ?? (device ? configuredAction(device, minuteOfDay(t)) : null)
     if (!action) continue
-    const source = planned ? 'plan' : 'inverter'
+    const source: TrackSource = elapsed ? 'measured' : planned ? 'plan' : 'inverter'
     const last = segments.at(-1)
-    if (last && last.t1 === t && last.action === action && last.source === source) last.t1 = t + QUARTER
+    if (last && last.t1 === t && last.action === action && (last.source === 'measured') === (source === 'measured')) last.t1 = t + QUARTER
     else segments.push({ t0: t, t1: t + QUARTER, action, source })
   }
   return segments

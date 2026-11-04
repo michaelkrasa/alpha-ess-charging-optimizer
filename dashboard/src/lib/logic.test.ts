@@ -151,20 +151,44 @@ describe('andon state', () => {
 })
 
 describe('single outlook schedule', () => {
-  it('uses the plan where it exists and inverter windows elsewhere', () => {
+  const device = {
+    charge: { gridCharge: 1, timeChaf1: '02:00', timeChae1: '04:00', timeChaf2: '00:00', timeChae2: '00:00' },
+    discharge: { ctrDis: 1, timeDisf1: '11:00', timeDise1: '18:00', timeDisf2: '00:00', timeDise2: '00:00' },
+    checked_at: '2026-10-21T09:58:00Z',
+  }
+  it('joins inverter settings and plan into one segment when the action matches', () => {
     const { s, plan } = priceState()
-    s.device_schedule = {
-      charge: { gridCharge: 1, timeChaf1: '02:00', timeChae1: '04:00', timeChaf2: '00:00', timeChae2: '00:00' },
-      discharge: { ctrDis: 1, timeDisf1: '00:00', timeDise1: '00:00', timeDisf2: '00:00', timeDise2: '00:00' },
-      checked_at: '2026-10-21T09:58:00Z',
-    }
+    s.device_schedule = device
+    plan.forEach(r => { r.action = 'self_consume' })
     const rows = visiblePrices(s, plan, 'today')
     const { start, end } = domain(s, rows, 'today')
+    // Now is 12:00 Prague: the current quarter is inverter-only, the plan starts 12:15.
     const track = scheduleTrack(s, plan, start, end)
-    expect(track.map(x => [x.source, x.action, minuteOfDay(x.t0)])).toEqual([
-      ['inverter', 'hold', 0], ['inverter', 'charge', 120], ['inverter', 'hold', 240], ['plan', 'hold', 12 * 60 + 15],
+    expect(track.map(x => [x.source, x.action, minuteOfDay(x.t0), minuteOfDay(x.t1)])).toEqual([
+      ['inverter', 'self_consume', 12 * 60, 0],
     ])
-    const d = inspect(s, plan, [], rows.find(r => minuteOfDay(r.timestamp) === 150)!)
-    expect(d.scheduleAction).toBe('charge'); expect(d.scheduleSource).toBe('inverter')
+  })
+
+  it('shows what the battery measurably did before Now, never the current settings', () => {
+    const { s, plan } = priceState()
+    s.device_schedule = device
+    s.telemetry = { timestamp: '2026-10-21T09:58:00Z', soc_percent: 50, capacity_kwh: 16, load_kw: 1, solar_kw: 0, battery_kw: 0 }
+    const at = (minute: number) => new Date(atLocalMinute('2026-10-21', minute)).toISOString()
+    // 02:00–02:30 rises 10 pp with no sun (grid), 09:00–09:15 rises 2 pp in sun,
+    // 10:00–10:15 falls 3 pp, 11:00–11:15 flat; everything else unmeasured.
+    s.soc_tracking = { actual: [[120, 20], [135, 25], [150, 30], [540, 40], [555, 42], [600, 45], [615, 42], [660, 42], [675, 42]]
+      .map(([m, v]) => ({ timestamp: at(m), actual_soc: v })) }
+    const observed = [{ timestamp: at(545), solar_kw: 2.5, load_kw: 0.5, soc_percent: 41, battery_kw: 0 }]
+    const rows = visiblePrices(s, plan, 'today')
+    const { start, end } = domain(s, rows, 'today')
+    const track = scheduleTrack(s, plan, start, end, observed)
+    expect(track.map(x => [x.source, x.action, minuteOfDay(x.t0), minuteOfDay(x.t1)])).toEqual([
+      ['measured', 'charge', 120, 150], ['measured', 'solar', 540, 555], ['measured', 'self_consume', 600, 615],
+      ['measured', 'hold', 660, 675], ['inverter', 'self_consume', 720, 735], ['plan', 'hold', 735, 0],
+    ])
+    const d = inspect(s, plan, observed, rows.find(r => minuteOfDay(r.timestamp) === 120)!)
+    expect(d.scheduleAction).toBe('charge'); expect(d.scheduleSource).toBe('measured')
+    const unmeasured = inspect(s, plan, observed, rows.find(r => minuteOfDay(r.timestamp) === 300)!)
+    expect(unmeasured.scheduleAction).toBeNull()
   })
 })

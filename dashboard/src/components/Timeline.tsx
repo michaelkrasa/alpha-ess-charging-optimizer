@@ -89,7 +89,7 @@ export function Timeline({ s, plan, view, basis }: { s: DashboardState; plan: De
     const sy = (v: number) => bottom - (v / solarMax) * PLOT_H * SOLAR_SHARE
     const solarSteps = rows.map(r => ({ x0: x(ms(r.timestamp)), x1: x(ms(r.timestamp) + QUARTER), y: finite(r.solar_kw) ? sy(r.solar_kw) : null }))
 
-    const track = scheduleTrack(s, plan, start, end)
+    const track = scheduleTrack(s, plan, start, end, observed)
 
     const twoDays = end - start > 26 * 3600000
     const ticks: { x: number; label: string }[] = []
@@ -236,20 +236,19 @@ export function Timeline({ s, plan, view, basis }: { s: DashboardState; plan: De
           })}
           {!rows.length && <text x={PAD_L + m.plotW / 2} y={PLOT_TOP + PLOT_H / 2} className="empty" textAnchor="middle">Prices for this day are not published yet</text>}
 
-          {/* Schedule band: plan where it exists, inverter settings elsewhere. */}
+          {/* Schedule band: measured activity before Now; plan, else inverter settings, after. */}
           <text x={PAD_L - 8} y={BAND_TOP + 17} className="band-label" textAnchor="end">Schedule</text>
           <rect x={PAD_L} y={BAND_TOP} width={m.plotW} height={BAND_H} className="band-bg" />
           {m.track.map(seg => {
             const x0 = x(seg.t0), w = Math.max(0, x(seg.t1) - x0)
             return (
-              <g key={'s' + seg.t0} className={'seg ' + seg.action}>
+              <g key={'s' + seg.t0} className={'seg ' + seg.action + (seg.source === 'measured' ? ' past' : '')}>
                 <rect x={x0} y={BAND_TOP} width={w} height={BAND_H} />
                 {w > 80 && <text x={x0 + w / 2} y={BAND_TOP + 17} textAnchor="middle">{actionShort(seg.action)}</text>}
               </g>
             )
           })}
           {!m.track.length && <text x={PAD_L + 10} y={BAND_TOP + 17} className="band-empty">Waiting for plan</text>}
-          {nowX !== null && <rect x={PAD_L} y={BAND_TOP} width={nowX - PAD_L} height={BAND_H} className="elapsed band" />}
 
           {m.boundaries.map(b => <line key={b.key} x1={b.x} x2={b.x} y1={PLOT_TOP} y2={BAND_TOP + BAND_H} className="day-boundary" />)}
           {view === 'all' && m.keys.map(k => (

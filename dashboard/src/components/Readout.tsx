@@ -83,11 +83,14 @@ export function Readout({ detail: d, basis, dayText, left, top, width, pinned }:
         <span className="readout-label">Schedule</span>
         <div className="readout-schedule">
           <span className={'action-pill ' + (d.scheduleAction ?? 'none')}>{d.scheduleAction ? actionLabel(d.scheduleAction) : 'No schedule'}</span>
-          {d.plan && (finite(d.plan.grid_charge_kw) && d.plan.grid_charge_kw > 0.01
+          {d.plan && !d.elapsed && (finite(d.plan.grid_charge_kw) && d.plan.grid_charge_kw > 0.01
             ? <span className="readout-sub">grid {fmt(d.plan.grid_charge_kw, 2)} kW</span>
             : finite(d.plan.battery_load_kw) && d.plan.battery_load_kw > 0.01 ? <span className="readout-sub">supply {fmt(d.plan.battery_load_kw, 2)} kW</span> : null)}
         </div>
-        {d.scheduleSource === 'inverter'
+        {d.scheduleSource === 'measured'
+          ? <div className="readout-sub">What the battery did · from measured SOC</div>
+          : d.elapsed && !d.scheduleAction ? <div className="readout-sub">Not measured</div>
+          : d.scheduleSource === 'inverter'
             ? <div className="readout-sub">From inverter settings</div>
             : d.scheduleSource === 'plan' && !d.inverterConfirmed ? <div className="readout-sub">Inverter settings not yet confirmed</div> : null}
       </section>

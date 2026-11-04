@@ -89,7 +89,9 @@ export default function App() {
                   <span><i className="key solar solid" />Measured solar</span>
                   <span className="legend-gap"><i className="sw charge" />Grid charge</span>
                   <span><i className="sw self_consume" />House supply</span>
+                  <span><i className="sw solar" />Store solar</span>
                   <span><i className="sw hold" />Preserve</span>
+                  <span className="legend-note">Lighter before Now = measured</span>
                 </div>
               </section>
               <aside className="side">
