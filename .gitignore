@@ -10,6 +10,7 @@ venv/
 ENV/
 env/
 lib/
+!dashboard/src/lib/
 
 # Testing
 .pytest_cache/

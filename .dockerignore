@@ -7,6 +7,9 @@ __pycache__/
 venv/
 tests/
 
+# Dashboard source; the image serves the committed build in src/manager/
+dashboard/
+
 # Build artifacts
 build/
 dist/

@@ -8,5 +8,6 @@ This is an EMHASS-to-AlphaESS integration with a local dashboard. EMHASS owns op
 - Tests: `uv run --frozen --extra emhass --extra dev pytest tests/ -q`. EMHASS adapter changes require actual solves, physical replay and target-host full-horizon performance checks.
 - Use synthetic fixtures in Git. Credentials, raw household evidence, private configuration and operational outputs stay outside tracked files.
 - Default to observation mode. One live writer per inverter; retain freshness checks, readiness, reserve, leases, write spacing and readback. A code change or passing test does not commission physical behavior.
+- Dashboard source is `dashboard/` (React + Vite). Never hand-edit `src/manager/dashboard.html`: run `npm run build` there, then `python scripts/build-demo.py`. `npm ci` in `dashboard/` makes pytest include the frontend suite and the build-freshness check.
 - Verify dashboard changes with the read-only preview before deploying. Runtime secrets belong in host-private files/environment, never image layers or public screenshots.
 - Dependency updates: preserve `uv.lock`, regenerate `requirements-server.txt`, and validate the EMHASS version-specific adapter before changing its pin.

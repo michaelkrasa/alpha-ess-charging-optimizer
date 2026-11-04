@@ -99,14 +99,18 @@ def stable_numbers(value):
     return value
 
 
-def build():
-    source = (ROOT / 'src/manager/dashboard.html').read_text()
+def demo_state_json():
     sys.path.insert(0, str(ROOT))
     from src.manager.plan_insight import explain_plan
     data = sample_state()
     data['plan_insights'] = explain_plan(data['plan'], data['price_intervals'])
-    state = json.dumps(stable_numbers(data), separators=(',', ':'), allow_nan=False)
-    script = '''
+    return json.dumps(stable_numbers(data), separators=(',', ':'), allow_nan=False)
+
+
+def build():
+    source = (ROOT / 'src/manager/dashboard.html').read_text()
+    state = demo_state_json()
+    script = """<script>
 const demoState = DEMO_STATE;
 const demoSchedule = JSON.parse(JSON.stringify(demoState.device_schedule));
 async function demoFetch(path, options={}) {
@@ -123,18 +127,22 @@ async function demoFetch(path, options={}) {
   } else if(path!=='/api/state') throw Error('Demo has no external API');
   return {ok:true,json:async()=>JSON.parse(JSON.stringify(demoState))};
 }
-'''.replace('DEMO_STATE', state)
-    source = source.replace('<head>', '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src \'self\' data:; connect-src \'none\'; base-uri \'none\'; form-action \'none\'">')
-    source = source.replace('<title>Household · Energy manager</title>', '<title>AlphaESS Energy Manager · Interactive demo</title>')
-    banner = '''<aside class="demo-banner"><div><strong>Interactive demo</strong><span>Synthetic data · controls affect only this page · sample time 18:15</span></div><nav><a href="https://github.com/michaelkrasa/alpha-ess-charging-optimizer">GitHub ↗</a><a href="index.html" download="alphaess-demo.html">Download HTML ↓</a></nav></aside>'''
-    css = '''.demo-banner{max-width:1240px;margin:18px auto 0;padding:14px 24px;background:#e8eddf;border:1px solid #d3ddc8;border-radius:10px;display:flex;justify-content:space-between;gap:16px;align-items:center;font-size:12px}.demo-banner strong{display:block;color:#41674b;font-size:14px}.demo-banner span{color:#697361}.demo-banner nav{display:flex;gap:18px;flex-shrink:0}.demo-banner a{color:#41674b;text-underline-offset:3px}@media(max-width:700px){.demo-banner{margin:12px;display:block}.demo-banner nav{margin-top:10px}}'''
-    source = source.replace('</style>', css + '</style>').replace('<body><main>', '<body>' + banner + '<main>')
-    source = source.replace('<script>', '<script>' + script).replace("fetch('/api/", "demoFetch('/api/")
-    source = source.replace("'ESS connected'", "'Simulated ESS'").replace("'Connected · cloud API'", "'Simulated · cloud API'")
+window.__ENERGY_DEMO__ = {fetch: demoFetch, label: 'Synthetic data'};
+</script>""".replace('DEMO_STATE', state)
+    csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src \'self\' data:; connect-src \'none\'; base-uri \'none\'; form-action \'none\'">'
+    banner = '<aside class="demo-banner"><div><strong>Interactive demo</strong><span>Synthetic data · controls affect only this page · sample time 18:15</span></div><nav><a href="https://github.com/michaelkrasa/alpha-ess-charging-optimizer">GitHub ↗</a><a href="index.html" download="alphaess-demo.html">Download HTML ↓</a></nav></aside>'
+    css = '<style>.demo-banner{position:relative;z-index:2;max-width:1680px;margin:16px auto 0;padding:12px 20px;background:#edf5ff;border:1px solid #d0e2ff;border-left:4px solid #0f62fe;border-radius:8px;display:flex;justify-content:space-between;gap:16px;align-items:center;font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#393939;width:calc(100% - 56px)}.demo-banner strong{display:block;color:#161616;font-size:14px}.demo-banner nav{display:flex;gap:18px;flex-shrink:0}.demo-banner a{color:#0f62fe;text-underline-offset:3px}@media(max-width:760px){.demo-banner{width:calc(100% - 24px);display:block}.demo-banner nav{margin-top:8px}}</style>'
+    source = source.replace('<head>', '<head>' + csp, 1)
+    source = source.replace('<title>Household · Energy manager</title>', '<title>AlphaESS Energy Manager · Interactive demo</title>' + css + script, 1)
+    source = source.replace('<body>', '<body>' + banner, 1)
     return source
 
 
 if __name__ == '__main__':
+    if '--state' in sys.argv:
+        # Synthetic API state for the dashboard's frontend tests.
+        print(demo_state_json())
+        raise SystemExit
     target = ROOT / 'docs/index.html'
     content = build()
     if '--check' in sys.argv:

@@ -61,7 +61,16 @@ policies are disabled by default in the example configuration.
 
 ## Development preview
 
-Use the local HTML with read-only state from an existing manager:
+The dashboard is a React app in `dashboard/`. `npm run build` compiles it into the single self-contained `src/manager/dashboard.html` that FastAPI serves, so the image needs no Node.js and no CDN. Commit that file with its source; a test fails if they diverge.
+
+```bash
+cd dashboard && npm ci
+npm test          # logic and rendering checks against the synthetic demo state
+npm run build     # writes ../src/manager/dashboard.html
+cd .. && python scripts/build-demo.py
+```
+
+Then preview the built HTML with read-only state from an existing manager:
 
 ```bash
 uv run --extra emhass python scripts/preview-dashboard.py --source http://YOUR_SERVER:8765
@@ -71,7 +80,7 @@ Open `http://127.0.0.1:8766`. POST requests are rejected, leaving the existing m
 
 ## Battery forecast tracking
 
-The price chart overlays expected and measured battery charge on a 0–100% axis. Measurements are aligned to quarter-hour boundaries; short, bracketed gaps are interpolated, longer gaps remain blank. Curves are smoothed for display without changing the recorded points. Hover or use the arrow keys to inspect the time, prices, SOC and actual-minus-expected difference in percentage points.
+The outlook timeline shows price, battery charge, solar, the proposed plan and the confirmed inverter settings on one time axis; the battery lane overlays expected and measured charge on a 0–100% axis. Measurements are aligned to quarter-hour boundaries; short, bracketed gaps are interpolated, longer gaps remain blank. Curves are smoothed for display without changing the recorded points. Hover, click to pin, or use the arrow keys to inspect one quarter hour: prices, SOC with the actual-minus-expected difference in percentage points, solar, demand, and the planned versus configured action.
 
 After a confirmed active plan, future SOC expectations are saved and may update until their interval begins. Past expectations are retained unchanged. A new installation therefore shows measured history immediately when available, but cannot invent historical predictions; comparisons accumulate prospectively. Deltas reflect forecast and execution differences, including manual intervention. Day summaries describe the current plan and import-price peaks; they do not promise savings.
 

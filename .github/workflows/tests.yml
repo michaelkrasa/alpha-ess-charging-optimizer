@@ -18,6 +18,17 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen --extra emhass --extra dev --python 3.12
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+        working-directory: dashboard
+      - name: Type-check dashboard
+        run: npm run check
+        working-directory: dashboard
       - run: uv run --frozen --extra emhass --extra dev pytest tests/ -q
       - name: Check demo matches the dashboard
         run: python scripts/build-demo.py --check

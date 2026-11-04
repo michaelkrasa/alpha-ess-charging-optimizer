@@ -248,7 +248,7 @@ def test_dashboard_requires_auth_and_protects_controls(tmp_path, monkeypatch):
     assert (
         response.status_code == 200 and "no-store" in response.headers["cache-control"]
     )
-    assert "10% reserve" in response.text
+    assert "<title>Household · Energy manager</title>" in response.text
     assert (
         client.post("/api/control", auth=auth, json={"enabled": False}).status_code
         == 403
@@ -348,7 +348,7 @@ def test_sign_in_uses_http_only_session_cookie(tmp_path, monkeypatch):
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "SameSite=strict" in response.headers["set-cookie"]
     assert client.get("/api/state").status_code == 200
-    assert "Automatic management" in client.get("/").text
+    assert "<title>Household · Energy manager</title>" in client.get("/").text
 
 
 @pytest.mark.asyncio

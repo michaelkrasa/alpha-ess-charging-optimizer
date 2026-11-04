@@ -21,73 +21,9 @@ def test_demo_matches_dashboard_and_blocks_network():
     assert 'nasnas.local' not in html
 
 
-def test_demo_renders_day_price_and_toggle_controls_without_api_calls():
-    node = shutil.which('node')
-    if not node:
-        pytest.skip('Node is needed for the dashboard JavaScript integration check')
-    script = r'''
-const fs=require('node:fs'), vm=require('node:vm'), assert=require('node:assert/strict');
-const html=fs.readFileSync('docs/index.html','utf8');
-const elements=new Map();
-class Element {
- constructor(){this.children=[];this.style={};this.dataset={};this.attributes={};this.textContent='';this.classList={toggle(){},add(){},remove(){}};}
- append(...items){this.children.push(...items)}
- appendChild(item){this.append(item)}
- replaceChildren(...items){this.children=items}
- setAttribute(k,v){this.attributes[k]=v}
- getBoundingClientRect(){return {width:1100,height:280,left:0}}
- querySelector(){return this.child||(this.child=new Element())}
- getContext(){return new Proxy({}, {get:(obj,key)=>key in obj?obj[key]:(...args)=>{if(['moveTo','lineTo','fillRect'].includes(key)) assert(args.every(Number.isFinite));},set:(obj,key,value)=>(obj[key]=value,true)})}
-}
-const get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)};
-const days=['today','tomorrow','all'].map(day=>{const el=new Element();el.dataset.day=day;return el});
-const context=vm.createContext({console,Intl,Date,AbortController,window:{devicePixelRatio:2,addEventListener(){}},setInterval(){},setTimeout,clearTimeout,
- document:{getElementById:get,createElement:()=>new Element(),querySelectorAll:()=>days},
- fetch(){throw Error('Unexpected network call')}});
-vm.runInContext(html.split('<script>')[1].split('</script>')[0],context);
-(async()=>{
- await vm.runInContext('refresh()',context);
- assert.equal(get('connectionError').textContent,'');
- assert.notEqual(get('soc').textContent,'—');
- assert(get('priceStats').textContent.includes('Mean'));
- assert(get('solarToday').textContent.includes('kWh generated today'));
- assert(get('batteryChargedToday').textContent.includes('solar + grid'));
- assert.equal(get('solar').textContent,String(vm.runInContext('Math.round(data.telemetry.solar_kw*1000)',context)));assert.equal(get('solarUnit').textContent,'W');
- vm.runInContext('data.telemetry.solar_kw=1.2;render(data)',context);
- assert.equal(get('solar').textContent,'1.20');assert.equal(get('solarUnit').textContent,'kW');
- vm.runInContext('data.telemetry.solar_kw=0.34;render(data)',context);
- assert.equal(get('controlDescription').textContent,'Every 5 min');
- assert.equal(get('acceptanceState').textContent,'Settings confirmed');
- vm.runInContext('data.price_intervals=[];table()',context);
- assert(days[1].disabled&&days[2].disabled);
- assert(!days[1].hidden&&!days[2].hidden,'Unavailable days stay visible');
- days[1].onclick();assert.equal(vm.runInContext('selectedDay',context),'today');
- vm.runInContext('data.price_intervals=demoState.price_intervals;table()',context);
- assert(!days[1].disabled&&!days[2].disabled);
- days[1].onclick();
- assert(get('planHeading').textContent.includes('Tomorrow'));
- get('priceBasis').value='import';get('priceBasis').onchange();
- assert(get('priceLegend').textContent.includes('Your import'));
- days[0].onclick();
- get('outlook').onpointermove({clientX:46+40.1/96*(1100-89)});
- assert(get('tooltip').textContent.includes('Expected'));
- assert(get('tooltip').textContent.includes('Measured'));
- assert(get('tooltip').textContent.includes('Δ'));
- assert(get('socDeviation').textContent.includes('percentage points'));
- get('outlook').onpointerleave();
- assert.equal(get('tooltip').textContent,'');
- days[1].onclick();
- get('solarForecast').onpointermove({clientX:46+40.1/96*(1100-89)});
- assert(get('tooltip').textContent.includes('Solar forecast'));
- get('solarForecast').onpointerleave();
- await get('toggle').onclick();
- assert.equal(vm.runInContext('data.control.enabled',context),false);
- assert.equal(get('acceptanceState').textContent,'Automatic updates off');
- await get('toggle').onclick();
- assert.equal(vm.runInContext('data.control.enabled',context),true);
- assert.equal(get('connectionError').textContent,'');
- console.log('Demo rendering, charts, day navigation, price basis and ON/OFF passed without network');
-})().catch(error=>{console.error(error);process.exitCode=1});
-'''
-    result = subprocess.run([node, '-e', script], cwd=ROOT, capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
+def test_demo_injects_offline_transport_before_the_app():
+    html = (ROOT/'docs/index.html').read_text()
+    transport = html.index('window.__ENERGY_DEMO__ = {fetch: demoFetch')
+    app = html.index('<script type="module"')
+    assert transport < app, 'Demo transport must exist before the dashboard module runs'
+    assert 'GitHub' in html and 'Interactive demo' in html
