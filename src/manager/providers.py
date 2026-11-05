@@ -17,6 +17,38 @@ from .load_profile import expected_profile, LOAD_PROFILE_VERSION, charging_load_
 from .consumption import household_training_history, EV_ESTIMATOR_VERSION
 
 
+def intraday_solar_ratio(rows, solar, now, hours=3):
+    """Measured / forecast PV over the last complete daylight hours today.
+
+    Returns None without enough daylight evidence. Clamped so one odd hour
+    cannot swing the plan.
+    """
+    top = now.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    measured_total = forecast_total = 0.0
+    used = 0
+    for back in range(1, hours + 1):
+        start = top - timedelta(hours=back)
+        if start.astimezone(PRAGUE).date() != now.astimezone(PRAGUE).date():
+            break
+        values = []
+        for r in rows or []:
+            try:
+                t = datetime.fromisoformat(r["timestamp"])
+                if start <= t < start + timedelta(hours=1):
+                    values.append(float(r["solar_kw"]))
+            except (KeyError, ValueError, TypeError):
+                continue
+        forecast = solar.get((start + timedelta(hours=1)).isoformat())
+        if len(values) < 3 or forecast is None or forecast < 0.3:
+            continue
+        measured_total += sum(values) / len(values)
+        forecast_total += forecast
+        used += 1
+    if not used or not math.isfinite(measured_total):
+        return None
+    return min(2.0, max(0.5, measured_total / forecast_total))
+
+
 def parse_entsoe(xml, expected):
     root = ET.fromstring(xml)
     tag = lambda e: e.tag.rsplit("}", 1)[-1]
@@ -206,7 +238,7 @@ class Providers:
         cache = self.store.get(weather_key)
         if (
             not cache
-            or (now - datetime.fromisoformat(cache["fetched"])).total_seconds() > 3600
+            or (now - datetime.fromisoformat(cache["fetched"])).total_seconds() > 1800
         ):
             params = {
                 "latitude": config["latitude"],
@@ -292,6 +324,13 @@ class Providers:
             * 0.8
             for t, g in zip(data["time"], data["global_tilted_irradiance"])
         }
+        energy = self.store.get("energy_day") or {}
+        today = str(now.astimezone(PRAGUE).date())
+        ratio = (
+            intraday_solar_ratio(energy.get("rows"), solar, now)
+            if energy.get("day") == today
+            else None
+        )
         predicted = []
         for t in instants:
             key = (
@@ -299,7 +338,13 @@ class Providers:
             ).isoformat()
             if key not in solar:
                 raise ValueError("Solar forecast does not cover priced horizon")
-            predicted.append(solar[key])
+            value = solar[key]
+            if ratio is not None and t.astimezone(PRAGUE).date() == now.astimezone(PRAGUE).date():
+                # Trust today's measured over/under-performance for the next hours,
+                # fading back to the weather forecast over six hours.
+                weight = max(0.0, 1 - (t - now).total_seconds() / (6 * 3600))
+                value *= 1 + (ratio - 1) * weight
+            predicted.append(value)
         return load, predicted
 
     async def slots(self, now, device, telemetry):

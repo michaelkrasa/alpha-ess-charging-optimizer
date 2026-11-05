@@ -19,7 +19,11 @@ def capture_forecast(store, plan, now):
         if not str(today) <= day <= str(today + timedelta(days=1)):
             continue
         end = (start + timedelta(minutes=15)).astimezone(UTC).isoformat()
-        days.setdefault(day, {})[end] = {'timestamp': end, 'expected_soc': value, 'issued_at': now.isoformat()}
+        entry = {'timestamp': end, 'expected_soc': value, 'issued_at': now.isoformat()}
+        solar = row.get('solar_kw')
+        if isinstance(solar, (int, float)) and math.isfinite(solar) and solar >= 0:
+            entry['expected_solar_kw'] = solar
+        days.setdefault(day, {})[end] = entry
     store.put('soc_tracking', {'days': days})
 
 

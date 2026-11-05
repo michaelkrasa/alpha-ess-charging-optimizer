@@ -136,6 +136,7 @@ export function inspect(s: DashboardState, plan: Decision[], observed: Telemetry
   const tracking = s.soc_tracking
   const actual = tracking?.actual?.find(r => ms(r.timestamp) === t)?.actual_soc ?? null
   const issued = tracking?.rows?.find(r => ms(r.timestamp) === t)?.expected_soc ?? null
+  const issuedSolar = tracking?.rows?.find(r => ms(r.timestamp) === t + QUARTER)?.expected_solar_kw ?? null
   const projected = plan.find(r => ms(r.timestamp) + QUARTER === t)?.soc_percent ?? null
   const expected = finite(issued) ? issued : finite(projected) ? projected : null
   const decision = plan.find(r => r.timestamp === row.timestamp) ?? null
@@ -150,7 +151,7 @@ export function inspect(s: DashboardState, plan: Decision[], observed: Telemetry
     importPrice: finite(row.import_eur_kwh) ? row.import_eur_kwh * 1000 : null,
     tariff: row.tariff,
     tariffVerified: row.tariff_verified,
-    solarForecast: finite(row.solar_kw) ? row.solar_kw : null,
+    solarForecast: t + QUARTER <= ms(s.now) && finite(issuedSolar) ? issuedSolar : finite(row.solar_kw) ? row.solar_kw : null,
     solarMeasured: nearest(observed, t, 'solar_kw'),
     demandMeasured: nearest(observed, t, 'load_kw'),
     expected,

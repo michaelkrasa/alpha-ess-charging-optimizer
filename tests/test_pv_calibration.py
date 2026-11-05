@@ -56,3 +56,19 @@ async def test_overcast_day_uses_bounded_prior_calibration(tmp_path, age, usable
     else:
         with pytest.raises(ValueError, match="calibrat"):
             await call
+
+
+def test_intraday_ratio_follows_measured_solar_and_ignores_thin_evidence():
+    from src.manager.providers import intraday_solar_ratio
+
+    now = datetime(2026, 10, 21, 12, 5, tzinfo=UTC)
+    top = now.replace(minute=0, second=0, microsecond=0)
+    solar = {(top - timedelta(hours=h - 1)).isoformat(): 1.0 for h in (1, 2)}
+    rows = [
+        {"timestamp": (top - timedelta(hours=h, minutes=-m)).isoformat(), "solar_kw": 1.5}
+        for h in (1, 2)
+        for m in (0, 15, 30, 45)
+    ]
+    assert intraday_solar_ratio(rows, solar, now) == pytest.approx(1.5)
+    assert intraday_solar_ratio(rows[:2], solar, now) is None
+    assert intraday_solar_ratio([], solar, now) is None

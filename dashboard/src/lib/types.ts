@@ -84,6 +84,7 @@ export interface SavingsDay {
 export interface SocRow {
   timestamp: string
   expected_soc: number | null
+  expected_solar_kw?: number | null
   actual_soc: number | null
   delta_pp: number | null
 }
