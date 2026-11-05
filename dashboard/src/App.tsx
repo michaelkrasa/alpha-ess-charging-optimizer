@@ -62,6 +62,7 @@ export default function App() {
             <KpiStrip s={s} activity={derived.activity} basis={basis} />
 
             <div className="main-grid">
+              <div className="main-col">
               <section className="panel timeline-panel" aria-labelledby="tlTitle">
                 <div className="panel-head timeline-head">
                   <div>
@@ -94,15 +95,16 @@ export default function App() {
                   <span className="legend-note">Lighter before Now = measured</span>
                 </div>
               </section>
+              <PlanWindows s={s} plan={derived.plan} view={view} />
+              </div>
               <aside className="side">
                 <NowPanel s={s} plan={derived.plan} acceptance={derived.acceptance} />
-                <DaySummary s={s} basis={basis} view={view} />
+                <DaySummary s={s} view={view} />
                 <SavingsPanel s={s} />
               </aside>
             </div>
 
             <div className="lower-grid">
-              <PlanWindows s={s} plan={derived.plan} view={view} />
               <SystemPanel
                 id="system"
                 attention={derived.board.tone === 'attention'}

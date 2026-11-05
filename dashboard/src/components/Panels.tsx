@@ -134,6 +134,7 @@ export function KpiStrip({ s, activity, basis }: { s: DashboardState; activity: 
   const rankText = !finite(rank) ? null : rank <= 0.25 ? 'Among cheapest today' : rank >= 0.75 ? 'Among priciest today' : 'Mid-range today'
   const lo = stats ? priceOf(stats.min, basis)! : null, hi = stats ? priceOf(stats.max, basis)! : null
   const marker = finite(price) && finite(lo) && finite(hi) && hi > lo ? (price - lo) / (hi - lo) : null
+  const meanAt = stats && finite(stats.mean) && finite(lo) && finite(hi) && hi > lo ? Math.min(1, Math.max(0, (stats.mean - lo) / (hi - lo))) : null
 
   return (
     <section className="kpis" aria-label="Current energy readings">
@@ -166,9 +167,9 @@ export function KpiStrip({ s, activity, basis }: { s: DashboardState; activity: 
 
       <Tile label={basis === 'spot' ? 'Market spot now' : 'Import price now'} tone="price" icon={<TagIcon />}
         foot={finite(marker) ? (
-          <div className="price-scale" title={'Today range ' + fmt(lo, 0) + '–' + fmt(hi, 0) + ' €/MWh'}>
+          <div className="price-scale" title={'Today range ' + fmt(lo, 0) + '–' + fmt(hi, 0) + ' €/MWh · mean ' + fmt(stats!.mean, 0)}>
             <span>{fmt(lo, 0)}</span>
-            <div className="price-track"><motion.i animate={{ left: (marker * 100).toFixed(1) + '%' }} transition={{ type: 'spring', stiffness: 120, damping: 20 }} /></div>
+            <div className="price-track">{finite(meanAt) && <b className="price-mean" style={{ left: (meanAt * 100).toFixed(1) + '%' }} title={'Mean ' + fmt(stats!.mean, 0) + ' €/MWh'} />}<motion.i animate={{ left: (marker * 100).toFixed(1) + '%' }} transition={{ type: 'spring', stiffness: 120, damping: 20 }} /></div>
             <span>{fmt(hi, 0)}</span>
           </div>
         ) : <span className="muted">Today’s range unavailable</span>}>
@@ -290,20 +291,12 @@ export function SavingsPanel({ s }: { s: DashboardState }) {
   )
 }
 
-export function DaySummary({ s, basis, view }: { s: DashboardState; basis: PriceBasis; view: DayView }) {
-  const stats = priceStats(s, basis)
+export function DaySummary({ s, view }: { s: DashboardState; view: DayView }) {
   const keys = selectedKeys(s.now, view)
   const insights = (s.plan_insights || []).filter(r => keys.includes(r.day))
   return (
     <SpotlightCard className="panel summary-panel" as="article" aria-labelledby="sumTitle">
-      <div className="panel-head"><h2 id="sumTitle">Today’s prices</h2><span className="muted small">{basis === 'spot' ? 'Market spot' : 'Import incl. fees & VAT'}</span></div>
-      {stats ? (
-        <div className="stat-trio" id="priceStats">
-          <div><span>Low</span><strong className="good"><CountUp value={priceOf(stats.min, basis)} digits={0} /></strong><em>{clock(stats.min.timestamp)}</em></div>
-          <div><span>Mean</span><strong><CountUp value={stats.mean} digits={0} /></strong><em>€/MWh</em></div>
-          <div><span>High</span><strong className="bad"><CountUp value={priceOf(stats.max, basis)} digits={0} /></strong><em>{clock(stats.max.timestamp)}</em></div>
-        </div>
-      ) : <p className="muted" id="priceStats">Today’s price statistics unavailable</p>}
+      <div className="panel-head"><h2 id="sumTitle">Plan insight</h2></div>
       <div className="insights" id="planInsight">
         {insights.map(row => (
           <div key={row.day}><strong>{dayLabel(row.day, s.now)}</strong><p>{row.text}</p></div>
