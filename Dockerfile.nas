@@ -1,6 +1,6 @@
 # A regular web server for a 64-bit Synology with Container Manager.
 # The existing Dockerfile is an AWS Lambda image, not a NAS service.
-FROM python:3.12-slim
+FROM python:3.15-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
     MPLCONFIGDIR=/tmp/matplotlib XDG_CACHE_HOME=/tmp/cache
